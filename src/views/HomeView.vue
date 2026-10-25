@@ -54,25 +54,21 @@ const netProxy = ref('')
 const dlPct = computed(() => dlTotal.value ? Math.round(dlDone.value / dlTotal.value * 100) : 0)
 async function checkSys() {
   try {
-    sys.value = await (await fetch('/api/system/detect')).json()
+    sys.value = await api.systemDetect()
     netMirrors.value = [...(sys.value?.net?.github_mirrors ?? [])]
     netProxy.value = sys.value?.net?.http_proxy ?? ''
   } catch {}
 }
 onMounted(checkSys)
 async function saveNet() {
-  const r = await (await fetch('/api/net/settings', { method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ github_mirrors: netMirrors.value.filter(s => s.trim()),
-                           http_proxy: netProxy.value.trim() }) })).json()
+  const r = await api.netSettingsSave(netMirrors.value.filter(s => s.trim()), netProxy.value.trim())
   if (r.ok) { emit('toast', '网络设置已保存'); checkSys() }
 }
 async function dlModel(id: string) {
   dlRunning.value = true; dlId.value = id; dlDone.value = 0; dlTotal.value = 1
-  await fetch('/api/models/download', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id }) })
+  await api.modelsDownload(id)
   const timer = setInterval(async () => {
-    const p = await (await fetch('/api/models/progress')).json()
+    const p = await api.modelsProgress()
     dlDone.value = p.done; dlTotal.value = p.total || 1
     if (!p.running) { clearInterval(timer); dlRunning.value = false
       if (p.error) emit('toast', '下载失败: ' + p.error)
@@ -151,13 +147,13 @@ const etaText = () => {
       </div>
       <div v-if="state?.photos?.length" class="stat-row">
         <div class="stat" style="animation-delay: 0s"><b>{{ state.photos.length }}</b><span>共 {{ state.groups.length }} 组</span></div>
-        <div class="stat" style="animation-delay: .05s"><b style="color: var(--good)">{{ state.photos.filter(p => p.status === 'winner').length }}</b><span>暂定胜出</span></div>
-        <div class="stat" style="animation-delay: .1s"><b style="color: var(--acc)">{{ state.groups.filter(g => g.needs_pk).length }}</b><span>等你拍板</span></div>
-        <div class="stat" style="animation-delay: .15s"><b style="color: var(--dim)">{{ state.photos.filter(p => p.status === 'reject').length }}</b><span>落选待复查</span></div>
+        <div class="stat" style="animation-delay: .05s"><b style="color: var(--good)">{{ state.photos.filter((p: any) => p.status === 'winner').length }}</b><span>暂定胜出</span></div>
+        <div class="stat" style="animation-delay: .1s"><b style="color: var(--acc)">{{ state.groups.filter((g: any) => g.needs_pk).length }}</b><span>等你拍板</span></div>
+        <div class="stat" style="animation-delay: .15s"><b style="color: var(--dim)">{{ state.photos.filter((p: any) => p.status === 'reject').length }}</b><span>落选待复查</span></div>
       </div>
       <div v-if="state?.photos?.length" style="margin-top: 24px">
-        <button v-if="state.groups.some(g => g.needs_pk)" class="act" @click="$emit('go', 'pk')">
-          进入决策（{{ state.groups.filter(g => g.needs_pk).length }} 组待拍板）
+        <button v-if="state.groups.some((g: any) => g.needs_pk)" class="act" @click="$emit('go', 'pk')">
+          进入决策（{{ state.groups.filter((g: any) => g.needs_pk).length }} 组待拍板）
         </button>
         <template v-else>
           <button class="act" @click="$emit('go', 'winners')">查看胜出与评分</button>

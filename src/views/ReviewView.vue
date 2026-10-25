@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { api, type State } from '../api'
+import PhotoCard from '../components/PhotoCard.vue'
 
 const props = defineProps<{ state: State | null }>()
 const emit = defineEmits<{ changed: []; toast: [m: string] }>()
@@ -57,12 +58,11 @@ window.addEventListener('keydown', onKey)
       <div v-for="(ps, t) in byReason" :key="t" class="sec" style="margin-bottom: 22px">
         <h3 style="font-size: 14px; color: var(--dim); font-weight: 500; margin-bottom: 8px">{{ t }}（{{ ps.length }}）</h3>
         <div class="grid">
-          <div v-for="p in ps" :key="p.path" class="card" :data-path="p.path"
-               title="点击召回（AI 判错了？捞回来）" @click="recall(p.path)">
-            <img :src="p.thumb_grid" loading="lazy" />
-            <div class="score" title="综合分（审美分 - 原因惩罚）">{{ p.score ?? '—' }}</div>
-            <div class="cap"><b>{{ p.name }}</b><span>{{ p.n_faces ? p.n_faces + '脸' : '无脸' }} · 锐{{ Math.round(p.sharpness) }}</span></div>
-          </div>
+          <PhotoCard v-for="p in ps" :key="p.path" :photo="p"
+                     :score-label="String(p.score ?? '—')"
+                     :note="'综合分（审美分 - 原因惩罚）'"
+                     :style="{ cursor: 'pointer' }"
+                     @click="recall(p.path)" />
         </div>
       </div>
       <div v-if="!rejects.length" class="empty">没有落选片</div>

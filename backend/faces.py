@@ -11,10 +11,16 @@
 - 模型缓存：~/.cache/cullmate/face_landmarker.task（3.7MB，Google storage）。
 """
 import logging
+from functools import lru_cache
 from pathlib import Path
 
 import cv2
 import numpy as np
+
+try:
+    import mediapipe as _mp
+except ImportError:            # mediapipe 可选（缺失时仅闭眼检测降级）
+    _mp = None
 
 log = logging.getLogger("cullmate")
 
@@ -92,6 +98,21 @@ def _ear(pts: np.ndarray) -> float:
     return float((np.linalg.norm(p[1]-p[5]) + np.linalg.norm(p[2]-p[4]))
                  / (2 * np.linalg.norm(p[0]-p[3]) + 1e-9))
 
+def _apply_ear(rec: dict, ear_l: float, ear_r: float,
+               th_closed: float, th_open: float) -> None:
+    """按 EAR 阈值写 closed/half（analyze 内三处共用）。"""
+    lo = min(ear_l, ear_r)
+    rec["closed"] = lo < th_closed
+    rec["half"] = (not rec["closed"]) and lo < th_open
+
+def _iou(a: list[float], b: list[float]) -> float:
+    """两 bbox（x1,y1,x2,y2）的 IoU。"""
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    inter = ix * iy
+    union = ((a[2]-a[0])*(a[3]-a[1]) + (b[2]-b[0])*(b[3]-b[1]) - inter)
+    return inter / union if union > 1e-6 else 0.0
+
 def analyze(img_bgr: np.ndarray, settings: dict | None = None) -> list[dict]:
     """返回每张脸的 {bbox, ear_l, ear_r, closed, half, tiny, source}。
 
@@ -116,9 +137,7 @@ def analyze(img_bgr: np.ndarray, settings: dict | None = None) -> list[dict]:
                # 脸宽小 ~30%——tiny 判定按来源分别取界
                "tiny": (bbox[2]-bbox[0]) < (56 if source == "facemesh" else 40)}
         if ear_l is not None:
-            lo = min(ear_l, ear_r)
-            rec["closed"] = lo < th
-            rec["half"] = (not rec["closed"]) and lo < th_open
+            _apply_ear(rec, ear_l, ear_r, th, th_open)
         out.append(rec)
 
     for f in det_faces:
@@ -129,8 +148,7 @@ def analyze(img_bgr: np.ndarray, settings: dict | None = None) -> list[dict]:
     if mesh is not None:
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         try:
-            import mediapipe as mp
-            res = mesh.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
+            res = mesh.detect(_mp.Image(image_format=_mp.ImageFormat.SRGB, data=rgb))
         except Exception as e:
             log.warning("faces: FaceMesh 失败(%s)，本图无 EAR 信号", e)
             res = None
@@ -143,20 +161,12 @@ def analyze(img_bgr: np.ndarray, settings: dict | None = None) -> list[dict]:
                 # 按 IoU 挂到 insightface 的脸（中心距在合影贴脸时会错配）
                 best, best_iou = None, 0.0
                 for rec in out:
-                    b = rec["bbox"]
-                    ix = max(0.0, min(bbox[2], b[2]) - max(bbox[0], b[0]))
-                    iy = max(0.0, min(bbox[3], b[3]) - max(bbox[1], b[1]))
-                    inter = ix * iy
-                    union = ((bbox[2]-bbox[0])*(bbox[3]-bbox[1])
-                             + (b[2]-b[0])*(b[3]-b[1]) - inter)
-                    iou = inter / union if union > 1e-6 else 0.0
+                    iou = _iou(bbox, rec["bbox"])
                     if iou > best_iou:
                         best, best_iou = rec, iou
                 if best is not None and best_iou > 0.3 and best.get("ear_l") is None:
                     best["ear_l"], best["ear_r"] = round(el, 3), round(er, 3)
-                    lo = min(el, er)
-                    best["closed"] = lo < th
-                    best["half"] = (not best["closed"]) and lo < th_open
+                    _apply_ear(best, el, er, th, th_open)
                 elif best_iou <= 0.3:
                     if bbox[2] - bbox[0] >= 56:   # insightface 漏检的脸补录
                         push(bbox, round(el, 3), round(er, 3), source="facemesh")

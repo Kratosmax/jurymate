@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { api, type State } from '../api'
+import PhotoCard from '../components/PhotoCard.vue'
 
 const props = defineProps<{ state: State | null }>()
 const emit = defineEmits<{ changed: []; toast: [m: string] }>()
@@ -8,9 +9,6 @@ const emit = defineEmits<{ changed: []; toast: [m: string] }>()
 const winners = computed(() => (props.state?.photos ?? []).filter((p) => p.status === 'winner'))
 const lightbox = ref('')
 
-function scoreColor(s: number | null) {
-  return s == null ? 'var(--dim)' : s >= 4 ? 'var(--good)' : s >= 3 ? 'var(--txt)' : 'var(--warn)'
-}
 function groupOf(path: string) {
   return props.state?.groups.find((g) => g.members.some((m) => m.path === path))
 }
@@ -45,18 +43,14 @@ async function openFolder() {
       <button class="danger" @click="organizeFlow">归类到 winners/ 与 rejects/</button>
     </div>
     <div class="grid">
-      <div v-for="(p, i) in winners" :key="p.path" class="card winner"
-           :style="{ animationDelay: Math.min(i * 0.03, 0.5) + 's' }" @click="lightbox = p.thumb_view">
-        <img :src="p.thumb_grid" loading="lazy" />
-        <div class="score" :style="{ color: scoreColor(p.aesthetic) }"
-             title="MUSIQ 无参考审美模型的 5 分制映射（人类平均审美参考分，AI 拿它排序）">
-          ★ {{ p.aesthetic ?? '—' }}
-        </div>
-        <div class="cap">
-          <b>{{ p.name }}</b>
-          <span>{{ (groupOf(p.path)?.members.length ?? 1) > 1 ? '组内 ' + groupOf(p.path)!.members.length + ' 选 1 · ' : '' }}{{ p.width }}×{{ p.height }}</span>
-        </div>
-      </div>
+      <PhotoCard v-for="(p, i) in winners" :key="p.path" :photo="p"
+                 :style="{ animationDelay: Math.min(i * 0.03, 0.5) + 's' }"
+                 :note="'MUSIQ 无参考审美模型的 5 分制映射（人类平均审美参考分，AI 拿它排序）'"
+                 @click="lightbox = p.thumb_view">
+        <template #cap-extra>
+          {{ (groupOf(p.path)?.members.length ?? 1) > 1 ? '组内 ' + groupOf(p.path)!.members.length + ' 选 1 · ' : '' }}
+        </template>
+      </PhotoCard>
     </div>
     <div v-if="!winners.length" class="empty">还没有胜出片</div>
     <teleport to="body">

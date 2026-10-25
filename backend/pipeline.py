@@ -1,9 +1,15 @@
-"""管线编排：扫描 → 缩略图 → 信号 → 人脸 → 审美 → 分组 → 决策引擎。
+"""管线编排：扫描 → 信号 → 人脸 → 审美 → 分组 → 决策引擎。
+
+三条编排共享的阶段函数（复用边界）：
+- pair_files / _prepare_base：文件配对与线程池预处理（解码/缩略图/信号/phash）
+- _face_stage：insightface + FaceMesh 主线程串行推理（模型单例的必然串行段）
+- score_candidates：硬淘汰豁免筛选 + view.jpg 批量评分
+- decide_group：单组决策（默认胜者/分差/是否需人 PK），全量与增量共用语义
 
 决策引擎（2026-10-25 与用户确认）：
 - 每组 AI 默认胜者 = 综合分最高者；只有前两名分差 < pk_gap 的组才需要人 PK。
-- 落选片保留（进 rejects，带原因标签），人工复查可召回。
-- 5 分制审美分只给胜出图（评分范围按用户选择）。
+- 落选片保留（带原因标签），人工复查可召回。
+- 5 分制审美分只给胜出图；硬淘汰片召回时补算。
 """
 import io
 import json
@@ -26,10 +32,15 @@ log = logging.getLogger("cullmate")
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp", ".heic", ".heif"}
 RAW_EXTS = {".arw", ".cr2", ".cr3", ".nef", ".raf", ".orf", ".rw2", ".dng", ".erf"}
 
+HARD_REASONS = frozenset(("失焦", "闭眼", "过曝", "欠曝"))
+
 PENALTY = {
     "失焦": 2.5, "闭眼": 2.0, "过曝": 0.8, "欠曝": 0.8,
     "偏软": 0.3, "低分": 1.5,
 }
+
+
+# ---------------------------------------------------------------- 基础工具
 
 def load_preview(path: str) -> Image.Image | None:
     """RAW 提内嵌预览（毫秒级），普通图直接打开。
@@ -61,10 +72,24 @@ def phash_of(img: Image.Image):
     except Exception:
         return None
 
+def shot_time(path: Path, is_jpeg: bool) -> float:
+    """拍摄时间：JPEG 读 EXIF DateTimeOriginal（复制文件不改 EXIF）；
+    RAW 多为 TIFF 系，piexif 不保证可读，用 mtime（相机直传=mtime≈拍摄时刻）。"""
+    if is_jpeg:
+        try:
+            import piexif
+            exif = piexif.load(str(path)).get("Exif") or {}
+            v = exif.get(36867)  # DateTimeOriginal
+            if v:
+                return datetime.strptime(v.decode().strip(), "%Y:%m:%d %H:%M:%S").timestamp()
+        except Exception:
+            pass
+    return path.stat().st_mtime
+
 def classify(photo: dict, settings: dict) -> list[str]:
     """按信号给淘汰原因（有脸豁免无脸失焦误杀，见 signals.py 设计要点）。"""
     reasons = []
-    th = signals.TH
+    th = dict(signals.TH)
     th.update({k: v for k, v in settings.items() if k in th})
     n_faces = len(photo.get("faces") or [])
     if n_faces:
@@ -89,19 +114,8 @@ def composite_score(photo: dict, aesthetic_score: float | None, reasons: list[st
     s = aesthetic_score if aesthetic_score is not None else 3.0
     return round(max(0.0, s - sum(PENALTY.get(r, 0.0) for r in reasons)), 2)
 
-def shot_time(path: Path, is_jpeg: bool) -> float:
-    """拍摄时间：JPEG 读 EXIF DateTimeOriginal（复制文件不改 EXIF）；
-    RAW 多为 TIFF 系，piexif 不保证可读，用 mtime（相机直传=mtime≈拍摄时刻）。"""
-    if is_jpeg:
-        try:
-            import piexif
-            exif = piexif.load(str(path)).get("Exif") or {}
-            v = exif.get(36867)  # DateTimeOriginal
-            if v:
-                return datetime.strptime(v.decode().strip(), "%Y:%m:%d %H:%M:%S").timestamp()
-        except Exception:
-            pass
-    return path.stat().st_mtime
+
+# ---------------------------------------------------------------- 共享阶段
 
 def pair_files(files) -> tuple:
     """RAW+JPG 双拍配对：同 stem 的 RAW/JPEG 视为同一张（JPG 分析面、
@@ -158,7 +172,8 @@ def _prepare_base(k: str, ent: dict, thumbs_dir: Path, settings: dict):
         "height": img.height,
         "mtime_str": datetime.fromtimestamp(shot_t).strftime("%m-%d %H:%M:%S"),
     }
-    # 缩略图（PK 大图 1600px + 网格小图 400px）
+    # 缩略图（PK 大图 1600px + 网格小图 400px）；命名必须用 primary——
+    # 配对循环的残留变量曾让 9 张照片互相覆盖（视觉实测发现）
     tdir = thumbs_dir / (primary.stem + primary.suffix.lower().replace(".", "_"))
     tdir.mkdir(parents=True, exist_ok=True)
     big, small = tdir / "view.jpg", tdir / "grid.jpg"
@@ -184,32 +199,28 @@ def _prepare_base(k: str, ent: dict, thumbs_dir: Path, settings: dict):
     bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
     return photo, gray, bgr
 
-def scan_folder(folder: str, thumbs_dir: Path, settings: dict,
-                progress=None) -> list[dict]:
-    folder_path = Path(folder)
-    files = sorted(p for p in folder_path.iterdir()
-                   if p.is_file() and p.suffix.lower() in (IMAGE_EXTS | RAW_EXTS))
-    order, primaries = pair_files(files)
-
-    tasks = [(k, primaries[k]) for k in order
-             if primaries[k]["raw"] is not None or primaries[k]["jpg"] is not None]
-    # 阶段一：解码/缩略图/信号——rawpy 与 JPEG 解码、numpy 都释放 GIL，
-    # ThreadPool 真并行（千张场景的大头）；模型推理（人脸/审美）保持主线程。
+def _parallel_prepare(tasks, thumbs_dir: Path, settings: dict, progress=None) -> dict:
+    """阶段一：解码/缩略图/信号并行执行，返回 {key: (photo, gray, bgr)}。"""
     from concurrent.futures import ThreadPoolExecutor
-    base_results = {}
+    results = {}
+    if not tasks:
+        return results
     with ThreadPoolExecutor(max_workers=4) as pool:
         futures = {pool.submit(_prepare_base, k, ent, thumbs_dir, settings): k
                    for k, ent in tasks}
         for n_done, fut in enumerate(futures, 1):
             k = futures[fut]
             try:
-                base_results[k] = fut.result()
+                results[k] = fut.result()
             except Exception as e:
                 log.warning("预处理失败 %s: %s", k, e)
             if progress:
                 progress(n_done, len(tasks) * 2, k)
+    return results
 
-    # 阶段二：人脸模型（insightface DML + FaceMesh）主线程串行
+def _face_stage(order: list, base_results: dict, settings: dict,
+                progress=None, progress_offset: int = 0) -> list[dict]:
+    """阶段二：人脸模型（insightface DML + FaceMesh）主线程串行推理。"""
     photos = []
     for ki, k in enumerate(order):
         base = base_results.get(k)
@@ -228,69 +239,97 @@ def scan_folder(folder: str, thumbs_dir: Path, settings: dict,
                 photo["face_sharpness"] = signals.sharpness(gray[y1:y2, x1:x2])
         photos.append(photo)
         if progress:
-            progress(len(order) + ki + 1, len(order) * 2, photo["name"])
+            progress(progress_offset + ki + 1, progress_offset + len(order),
+                     photo["name"])
     return photos
 
-def decide(photos: list[dict], settings: dict) -> list[dict]:
-    """逐图定原因/综合分；逐组定默认胜者与是否需要人 PK。"""
-    for ph in photos:
-        ph["reject_reasons"] = classify(ph, settings)
-        ph["aesthetic"] = ph.get("aesthetic")  # 保留
-        ph["score"] = composite_score(ph, ph.get("aesthetic"), ph["reject_reasons"])
+def score_candidates(photos: list[dict], state_dir: Path, settings: dict,
+                     progress=None, report_all: int | None = None) -> None:
+    """阶段三：无硬淘汰原因的候选批量评分（原地写 aesthetic）。
 
-    group_ids = group_mod.group(photos, settings)
+    评分直接用 scan 阶段生成的 1600px view.jpg——重复走 rawpy 解码是纯浪费。
+    report_all：进度总口径（全量=2N；增量场景无对应前半段，传 None 只报阶段名）。
+    """
+    n = report_all if report_all is not None else len(photos)
+    todo = [ph for ph in photos
+            if not (set(classify(ph, settings)) & HARD_REASONS)]
+    if not todo:
+        if progress and report_all is not None:
+            for idx, ph in enumerate(photos):
+                progress(n + idx + 1, n * 2, ph["name"])
+        return
+    if progress:
+        progress(n, n * 2, "加载审美模型（首次约 20 秒）…")
+    images = []
+    for ph in todo:
+        view = Path(ph["thumb_view"].lstrip("/"))
+        cached = state_dir / "thumbs" / view
+        images.append(load_preview(str(cached) if cached.exists() else ph["path"]))
+    for ph, s in zip(todo, aesthetic.score_batch(images)):
+        ph["aesthetic"] = s
+    if progress and report_all is not None:
+        for idx, ph in enumerate(photos):
+            progress(n + idx + 1, n * 2, ph["name"])
+
+def decide_group(members: list[int], photos: list[dict], settings: dict,
+                 gid: int, id_offset: int = 0) -> dict:
+    """单组决策：默认胜者/分差/是否需人 PK；组内落选打标。
+
+    members 是 photos 的局部索引（增量场景传 new_photos，id_offset 把
+    winner/members 换算回全局索引）。"""
     pk_gap = float(settings.get("pk_gap", 0.35))
     min_score = float(settings.get("min_score", 2.0))
+    for i in members:
+        ph = photos[i]
+        ph["group_id"] = gid
+        if ph["aesthetic"] is not None and ph["aesthetic"] < min_score \
+                and "低分" not in ph["reject_reasons"]:
+            ph["reject_reasons"].append("低分")
+            ph["score"] = composite_score(ph, ph["aesthetic"], ph["reject_reasons"])
+    ranked = sorted(members, key=lambda i: -photos[i]["score"])
+    winner = ranked[0]
+    gap = (photos[ranked[0]]["score"] - photos[ranked[1]]["score"]) \
+        if len(ranked) > 1 else 99.0
+    for i in members:
+        if i != winner and not photos[i]["reject_reasons"]:
+            photos[i]["reject_reasons"] = ["组内落选"]
+    return {"id": gid,
+            "members": [id_offset + i for i in members],
+            "winner": id_offset + winner,
+            "gap": round(gap, 2),
+            "needs_pk": len(members) > 1 and gap < pk_gap}
+
+
+# ---------------------------------------------------------------- 编排层
+
+def scan_folder(folder: str, thumbs_dir: Path, settings: dict,
+                progress=None) -> list[dict]:
+    folder_path = Path(folder)
+    files = sorted(p for p in folder_path.iterdir()
+                   if p.is_file() and p.suffix.lower() in (IMAGE_EXTS | RAW_EXTS))
+    order, primaries = pair_files(files)
+    tasks = [(k, primaries[k]) for k in order
+             if primaries[k]["raw"] is not None or primaries[k]["jpg"] is not None]
+    base_results = _parallel_prepare(tasks, thumbs_dir, settings, progress)
+    return _face_stage(order, base_results, settings, progress, len(order))
+
+def decide(photos: list[dict], settings: dict) -> list[dict]:
+    """全量决策：逐图定原因/综合分；逐组定默认胜者与是否需要人 PK。"""
+    for ph in photos:
+        ph["reject_reasons"] = classify(ph, settings)
+        ph["score"] = composite_score(ph, ph.get("aesthetic"), ph["reject_reasons"])
     groups_out = []
-    for gid, members in enumerate(group_ids):
-        for i in members:
-            photos[i]["group_id"] = gid
-            if photos[i]["aesthetic"] is not None and photos[i]["aesthetic"] < min_score \
-               and "低分" not in photos[i]["reject_reasons"]:
-                photos[i]["reject_reasons"].append("低分")
-                photos[i]["score"] = composite_score(photos[i], photos[i]["aesthetic"],
-                                                     photos[i]["reject_reasons"])
-        ranked = sorted(members, key=lambda i: -photos[i]["score"])
-        winner = ranked[0]
-        gap = (photos[ranked[0]]["score"] - photos[ranked[1]]["score"]) if len(ranked) > 1 else 99.0
-        needs_pk = len(members) > 1 and gap < pk_gap
-        groups_out.append({"id": gid, "members": members, "winner": winner,
-                           "gap": round(gap, 2), "needs_pk": needs_pk})
-        for i in members:
-            if i != winner and not photos[i]["reject_reasons"]:
-                photos[i]["reject_reasons"] = ["组内落选"]
+    for gid, members in enumerate(group_mod.group(photos, settings)):
+        groups_out.append(decide_group(members, photos, settings, gid))
     return groups_out
 
 def run(folder: str, state_dir: Path, settings: dict, progress=None) -> dict:
     photos = scan_folder(folder, state_dir / "thumbs", settings, progress)
-    # 审美分：只给无硬淘汰原因的候选算（省算力；落选片复查召回时补算）。
-    # 评分直接用 scan 阶段生成的 1600px view.jpg——重复走 rawpy 提取是纯浪费。
-    n = len(photos)
-    todo = []   # (idx, ph) —— 无硬淘汰原因的候选才评分
-    for ph in photos:
-        reasons = classify(ph, settings)
-        ph["_hard"] = [r for r in reasons if r in ("失焦", "闭眼", "过曝", "欠曝")]
-        if not ph["_hard"]:
-            todo.append(ph)
-    if todo and progress:
-        progress(n, n * 2, "加载审美模型（首次约 20 秒）…")
-    # 评分直接用 scan 生成的 1600px view.jpg——重复走 rawpy 解码是纯浪费
-    def _src(ph):
-        view = Path(ph["thumb_view"].lstrip("/"))
-        cached = state_dir / "thumbs" / view
-        return str(cached) if cached.exists() else ph["path"]
-    images = [load_preview(_src(ph)) for ph in todo]
-    scores = aesthetic.score_batch(images)
-    for ph, s in zip(todo, scores):
-        ph["aesthetic"] = s
-    for idx, ph in enumerate(photos):
-        ph.pop("_hard", None)
-        if progress:
-            progress(n + idx + 1, n * 2, ph["name"])
+    # 评分阶段的进度由 score_candidates 统一推进（含模型加载提示与逐张回执）
+    score_candidates(photos, state_dir, settings, progress, report_all=len(photos))
     groups = decide(photos, settings)
     return {"photos": photos, "groups": groups,
             "folder": folder, "settings": settings}
-
 
 def add_new_photos(folder: str, photos: list[dict], groups: list[dict],
                    state_dir: Path, settings: dict, progress=None) -> int:
@@ -305,74 +344,20 @@ def add_new_photos(folder: str, photos: list[dict], groups: list[dict],
     known = {Path(p["path"]).resolve().as_posix().lower() for p in photos}
     tasks = [(k, primaries[k]) for k in order
              if (primaries[k]["raw"] or primaries[k]["jpg"]) is not None
-             and (primaries[k]["raw"] or primaries[k]["jpg"]).resolve().as_posix().lower() not in known]
+             and (primaries[k]["raw"] or primaries[k]["jpg"]).resolve()
+                 .as_posix().lower() not in known]
     if not tasks:
         return 0
-    from concurrent.futures import ThreadPoolExecutor
-    base_results = {}
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        futures = {pool.submit(_prepare_base, k, ent, state_dir / "thumbs", settings): k
-                   for k, ent in tasks}
-        for n_done, fut in enumerate(futures, 1):
-            k = futures[fut]
-            try:
-                base_results[k] = fut.result()
-            except Exception as e:
-                log.warning("预处理失败 %s: %s", k, e)
-            if progress:
-                progress(n_done, len(tasks) * 2, k)
-    new_photos = []
-    for ki, k in enumerate(order):
-        base = base_results.get(k)
-        if base is None:
-            continue
-        photo, gray, bgr = base
-        fl = faces_mod.analyze(bgr, settings)
-        photo["faces"] = [{k2: (v.tolist() if hasattr(v, "tolist") else v)
-                           for k2, v in f.items() if k2 != "embedding"} for f in fl]
-        photo["n_faces"] = len(fl)
-        if fl:
-            x1, y1, x2, y2 = [int(v) for v in fl[0]["bbox"]]
-            x1, y1 = max(0, x1), max(0, y1)
-            x2, y2 = min(gray.shape[1], x2), min(gray.shape[0], y2)
-            if x2 - x1 > 8 and y2 - y1 > 8:
-                photo["face_sharpness"] = signals.sharpness(gray[y1:y2, x1:x2])
-        new_photos.append(photo)
-        if progress:
-            progress(len(tasks) + ki + 1, len(tasks) * 2, photo["name"])
-    # 评分（新图内部批处理）；人工决策不涉及
-    todo = []
-    for ph in new_photos:
-        reasons = classify(ph, settings)
-        if not [r for r in reasons if r in ("失焦", "闭眼", "过曝", "欠曝")]:
-            todo.append(ph)
-    if todo:
-        images = [load_preview(str(state_dir / "thumbs"
-                    / Path(ph["thumb_view"].lstrip("/")))) for ph in todo]
-        for ph, s in zip(todo, aesthetic.score_batch(images)):
-            ph["aesthetic"] = s
+    base_results = _parallel_prepare(tasks, state_dir / "thumbs", settings, progress)
+    new_photos = _face_stage([k for k, _ in tasks], base_results, settings,
+                             progress, len(tasks))
+    score_candidates(new_photos, state_dir, settings, None)
     for ph in new_photos:
         ph["reject_reasons"] = classify(ph, settings)
         ph["score"] = composite_score(ph, ph.get("aesthetic"), ph["reject_reasons"])
-    new_groups = group_mod.group(new_photos, settings)
-    pk_gap = float(settings.get("pk_gap", 0.35))
-    min_score = float(settings.get("min_score", 2.0))
-    for gi, members in enumerate(new_groups):
-        gid = len(photos) + gi          # 组 id 唯一即可（前端按 id 查找）
-        for i in members:
-            new_photos[i]["group_id"] = gid
-            if new_photos[i]["aesthetic"] is not None and new_photos[i]["aesthetic"] < min_score                and "低分" not in new_photos[i]["reject_reasons"]:
-                new_photos[i]["reject_reasons"].append("低分")
-                new_photos[i]["score"] = composite_score(new_photos[i],
-                                                         new_photos[i]["aesthetic"],
-                                                         new_photos[i]["reject_reasons"])
-        ranked = sorted(members, key=lambda i: -new_photos[i]["score"])
-        gap = (new_photos[ranked[0]]["score"] - new_photos[ranked[1]]["score"])             if len(ranked) > 1 else 99.0
-        groups.append({"id": gid, "members": [len(photos) + i for i in members],
-                       "winner": len(photos) + ranked[0],
-                       "gap": round(gap, 2), "needs_pk": len(members) > 1 and gap < pk_gap})
-        for i in members:
-            if i != ranked[0] and not new_photos[i]["reject_reasons"]:
-                new_photos[i]["reject_reasons"] = ["组内落选"]
+    offset = len(photos)
+    for gi, members in enumerate(group_mod.group(new_photos, settings)):
+        groups.append(decide_group(members, new_photos, settings,
+                                   offset + gi, id_offset=offset))
     photos.extend(new_photos)
     return len(new_photos)

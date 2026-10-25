@@ -36,7 +36,9 @@ export interface State {
   settings: Record<string, number>
 }
 
-// Tauri webview 的 origin 不是后端：需要绝对 baseUrl；浏览器/vite 模式走相对路径
+// Tauri webview 的 origin 不是后端：需要绝对 baseUrl；浏览器/vite 模式走相对路径。
+// 全站唯一 fetch 出口：BASE 解析 + HTTP 错误 → { ok:false, error } 统一形状，
+// 调用方只认 ok 字段（视图层不再散布 try/catch）。
 let BASE = ''
 let baseReady: Promise<void> | null = null
 async function initBase() {
@@ -54,11 +56,20 @@ async function initBase() {
 
 async function req<T = any>(path: string, body?: unknown, method?: string): Promise<T> {
   await initBase()
-  const r = await fetch(BASE + path, {
-    method: method ?? (body !== undefined ? 'POST' : 'GET'),
-    headers: { 'Content-Type': 'application/json' },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  })
+  let r: Response
+  try {
+    r = await fetch(BASE + path, {
+      method: method ?? (body !== undefined ? 'POST' : 'GET'),
+      headers: { 'Content-Type': 'application/json' },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    })
+  } catch (e) {
+    // 网络层失败（sidecar 未起/被墙）也归一为业务错误形状
+    return { ok: false, error: `无法连接后端服务（${e}）` } as any
+  }
+  if (!r.ok && !(r.headers.get('content-type') ?? '').includes('json')) {
+    return { ok: false, error: `HTTP ${r.status}` } as any
+  }
   return r.json()
 }
 
@@ -84,4 +95,10 @@ export const api = {
   organize: (dry: boolean) => req<{ ok: boolean; moved?: number; winners?: number; rejects?: number; pending_kept?: number; skipped_conflict?: number; error?: string }>('/api/organize', { dry }),
   exportCsv: () => req<{ ok: boolean; path?: string; rows?: number; error?: string }>('/api/export_csv', {}),
   openFolder: (sub = 'winners') => req<{ ok: boolean; error?: string }>('/api/open_folder', { sub }),
+  systemDetect: () => req<any>('/api/system/detect'),
+  modelsDownload: (id: string) => req<{ ok: boolean; error?: string | null }>('/api/models/download', { id }),
+  modelsProgress: () => req<{ running: boolean; done: number; total: number; id: string; error: string | null }>('/api/models/progress'),
+  netSettingsGet: () => req<{ github_mirrors: string[]; http_proxy: string | null }>('/api/net/settings'),
+  netSettingsSave: (github_mirrors: string[], http_proxy: string) =>
+    req<{ ok: boolean }>('/api/net/settings', { github_mirrors, http_proxy }),
 }

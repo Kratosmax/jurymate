@@ -24,7 +24,13 @@ app = Flask(__name__, static_folder=str(_FRONTEND) if _FRONTEND.exists() else No
 
 STATE = {"photos": [], "groups": [], "folder": None, "settings": {}, "undo_stack": []}
 TASK = {"running": False, "done": 0, "total": 0, "stage": "", "error": None}
-_LOCK = threading.Lock()
+_LOCK = threading.Lock()          # 启动任务互斥
+_SNAPSHOT_LOCK = threading.Lock() # STATE 列表引用快照（API 读 vs worker 原地写）
+
+def snapshot_state() -> tuple[list, list]:
+    """原子取出 photos/groups 的浅拷贝（读侧）。"""
+    with _SNAPSHOT_LOCK:
+        return list(STATE["photos"]), list(STATE["groups"])
 
 DEFAULT_SETTINGS = {
     "burst_gap": 3.0, "phash_dist": 10, "pk_gap": 0.35,
@@ -93,6 +99,9 @@ def refresh_statuses():
 
 @app.route("/")
 def index():
+    if not app.static_folder:
+        return jsonify({"ok": True, "mode": "sidecar-api-only",
+                        "hint": "前端由 Tauri 提供；浏览器模式请用源码运行"})
     return send_from_directory(app.static_folder, "index.html")
 
 @app.route("/api/start", methods=["POST"])
@@ -116,9 +125,10 @@ def start():
             # 增量：同目录已有人工决策，只补新图
             if incremental and STATE["photos"] \
                     and Path(STATE["folder"]).resolve() == Path(folder).resolve():
-                n_new = pipeline.add_new_photos(
-                    folder, STATE["photos"], STATE["groups"],
-                    Path(folder) / ".cullmate", STATE["settings"], progress)
+                with _SNAPSHOT_LOCK:
+                    n_new = pipeline.add_new_photos(
+                        folder, STATE["photos"], STATE["groups"],
+                        Path(folder) / ".cullmate", STATE["settings"], progress)
                 TASK.update(done=len(STATE["photos"]), total=len(STATE["photos"]),
                             stage=f"增量完成：新增 {n_new} 张")
                 save_state()
@@ -129,10 +139,12 @@ def start():
                 save_state()
                 return
             # 全量扫描
-            STATE.update(photos=[], groups=[])
+            with _SNAPSHOT_LOCK:
+                STATE.update(photos=[], groups=[])
             result = pipeline.run(folder, Path(folder) / ".cullmate",
                                   STATE["settings"], progress)
-            STATE.update(photos=result["photos"], groups=result["groups"])
+            with _SNAPSHOT_LOCK:
+                STATE.update(photos=result["photos"], groups=result["groups"])
             refresh_statuses()
             save_state()
         except Exception as e:
@@ -149,22 +161,34 @@ def progress_api():
 
 @app.route("/api/state")
 def state_api():
-    photos = [{k: v for k, v in ph.items() if k != "phash"} for ph in STATE["photos"]]
-    groups = [{k: (g[k] if k != "members" else
-                   [dict(STATE["photos"][i], idx=i) for i in g[k]])
-               for k in ("id", "winner", "gap", "needs_pk", "members")}
-              for g in STATE["groups"]]
+    # 快照读：worker 线程可能正在原地扩展 photos/groups（增量扫描），
+    # 直接迭代同一 list 会 RuntimeError: list changed size during iteration
+    with _SNAPSHOT_LOCK:
+        photos_src = list(STATE["photos"])
+        groups_src = list(STATE["groups"])
+    photos = [{k: v for k, v in ph.items() if k != "phash"} for ph in photos_src]
+    groups = []
+    for g in groups_src:
+        members = [dict(photos_src[i], idx=i) for i in g["members"]
+                   if 0 <= i < len(photos_src)]
+        groups.append({k: g.get(k) for k in ("id", "winner", "gap", "needs_pk")}
+                      | {"members": members})
     return jsonify({"folder": STATE["folder"], "photos": photos, "groups": groups,
-                    "settings": STATE["settings"]})
+                    "settings": dict(STATE["settings"])})
 
 @app.route("/api/pk", methods=["POST"])
 def pk():
-    """body: {group_id, action: "left"|"right"|"all"|"none", pick: member_idx}"""
+    """body: {group_id, action: "pick"|"all"|"none", pick: member_idx}"""
     body = request.json or {}
-    gid, action = body.get("group_id"), body.get("action")
-    g = next((g for g in STATE["groups"] if g["id"] == gid), None)
-    if not g:
-        return jsonify({"ok": False, "error": "组不存在"}), 404
+    gid = body.get("group_id")
+    with _SNAPSHOT_LOCK:
+        g = next((g for g in STATE["groups"] if g["id"] == gid), None)
+        if not g:
+            return jsonify({"ok": False, "error": "组不存在"}), 404
+        return _pk_apply(g, body)
+
+def _pk_apply(g: dict, body: dict):
+    action = body.get("action")
     push_undo()
     mem = g["members"]
     if action == "all":
@@ -199,9 +223,13 @@ def recall():
     每次召回把原因落进 recall_stats.json——这是阈值自校准的数据源：
     某类原因被召回得越多，说明该阈值越不可信。"""
     path = (request.json or {}).get("path")
-    ph = next((p for p in STATE["photos"] if p["path"] == path), None)
-    if not ph:
-        return jsonify({"ok": False, "error": "照片不存在"}), 404
+    with _SNAPSHOT_LOCK:
+        ph = next((p for p in STATE["photos"] if p["path"] == path), None)
+        if not ph:
+            return jsonify({"ok": False, "error": "照片不存在"}), 404
+        return _recall_apply(ph, path)
+
+def _recall_apply(ph: dict, path: str):
     push_undo()
     old_reasons = list(ph["reject_reasons"])
     ph["reject_reasons"] = []
@@ -227,6 +255,10 @@ def recall():
 
 @app.route("/api/undo", methods=["POST"])
 def undo():
+    with _SNAPSHOT_LOCK:
+        return _undo_apply()
+
+def _undo_apply():
     if not STATE["undo_stack"]:
         return jsonify({"ok": False, "error": "没有可撤销的操作"}), 400
     snap = json.loads(STATE["undo_stack"].pop())
