@@ -1,6 +1,38 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { api } from './api'
+import { check, type Update } from '@tauri-apps/plugin-updater'
+import { relaunch } from '@tauri-apps/plugin-process'
+
+const updateInfo = ref<{ version: string; body: string } | null>(null)
+const updating = ref(false)
+
+async function checkUpdate(silent: boolean) {
+  try {
+    if (!(window as any).__TAURI_INTERNALS__) return   // 浏览器模式无更新器
+    const u: Update | null = await check()
+    if (u) updateInfo.value = { version: u.version, body: u.body ?? '' }
+    else if (!silent) toast('已是最新版本')
+  } catch {
+    if (!silent) toast('检查更新失败（清单未发布或网络不可达）')
+  }
+}
+async function doUpdate() {
+  if (!updateInfo.value) return
+  updating.value = true
+  try {
+    const u: Update | null = await check()
+    if (u) {
+      await u.downloadAndInstall()
+      await relaunch()
+    }
+  } finally {
+    updating.value = false
+  }
+}
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'u' || e.key === 'U') checkUpdate(false)
+})
 import HomeView from './views/HomeView.vue'
 import DecideView from './views/DecideView.vue'
 import WinnersView from './views/WinnersView.vue'
@@ -39,7 +71,10 @@ window.addEventListener('keydown', (e) => {
   if (e.key >= '1' && e.key <= '4') go(pages[Number(e.key) - 1].id)
 })
 
-onMounted(refresh)
+onMounted(() => {
+  refresh()
+  checkUpdate(true)   // 启动静默检查
+})
 </script>
 
 <template>
@@ -54,6 +89,17 @@ onMounted(refresh)
     <div class="side-foot">
       <div class="tagline">全本地推理 · 零 token</div>
       <div><kbd>?</kbd> 快捷键 · <kbd>1-4</kbd> 切页</div>
+      <div style="margin-top:6px">
+        <button class="ghost" style="padding:3px 10px;font-size:11px" :disabled="updating"
+                @click="checkUpdate(false)">检查更新</button>
+        <button v-if="updateInfo" class="act" style="padding:3px 10px;font-size:11px"
+                :disabled="updating" @click="doUpdate">
+          {{ updating ? '更新中…' : `升级到 ${updateInfo.version}` }}
+        </button>
+      </div>
+    </div>
+    <div v-if="updateInfo" class="hintbar" style="margin:14px 16px 0">
+      可更新到 v{{ updateInfo.version }}{{ updateInfo.body ? '：' + updateInfo.body.slice(0, 120) : '' }}
     </div>
   </nav>
   <div class="main">
