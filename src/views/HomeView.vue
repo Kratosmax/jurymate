@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { api, type State } from '../api'
 
 const props = defineProps<{ state: State | null }>()
@@ -49,19 +49,34 @@ const dlRunning = ref(false)
 const dlId = ref('')
 const dlDone = ref(0)
 const dlTotal = ref(1)
-const proxy = ref('')
+const netMirrors = ref<string[]>([])
+const netProxy = ref('')
+const dlPct = computed(() => dlTotal.value ? Math.round(dlDone.value / dlTotal.value * 100) : 0)
 async function checkSys() {
-  try { sys.value = await (await fetch('/api/system/detect')).json() } catch {}
+  try {
+    sys.value = await (await fetch('/api/system/detect')).json()
+    netMirrors.value = [...(sys.value?.net?.github_mirrors ?? [])]
+    netProxy.value = sys.value?.net?.http_proxy ?? ''
+  } catch {}
 }
 onMounted(checkSys)
+async function saveNet() {
+  const r = await (await fetch('/api/net/settings', { method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ github_mirrors: netMirrors.value.filter(s => s.trim()),
+                           http_proxy: netProxy.value.trim() }) })).json()
+  if (r.ok) { emit('toast', '网络设置已保存'); checkSys() }
+}
 async function dlModel(id: string) {
   dlRunning.value = true; dlId.value = id; dlDone.value = 0; dlTotal.value = 1
   await fetch('/api/models/download', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id, proxy: proxy.value }) })
+    body: JSON.stringify({ id }) })
   const timer = setInterval(async () => {
     const p = await (await fetch('/api/models/progress')).json()
-    dlDone.value = p.done; dlTotal.value = p.total
-    if (!p.running) { clearInterval(timer); dlRunning.value = false; checkSys() }
+    dlDone.value = p.done; dlTotal.value = p.total || 1
+    if (!p.running) { clearInterval(timer); dlRunning.value = false
+      if (p.error) emit('toast', '下载失败: ' + p.error)
+      checkSys() }
   }, 500)
 }
 const frac = () => (total.value ? done.value / total.value : 0)
@@ -107,14 +122,31 @@ const etaText = () => {
           <span v-else-if="m.installed === null" style="color:var(--dim)">首次评分自动下载</span>
           <template v-else>
             <button class="ghost" :disabled="dlRunning" @click="dlModel(m.id)">
-              {{ dlRunning && dlId === m.id ? `下载中 ${Math.round(dlDone/dlTotal*100)}%` : '下载' }}
+              {{ dlRunning && dlId === m.id ? `下载中 ${dlPct}%` : '下载' }}
             </button>
           </template>
         </div>
-        <div v-if="dlRunning" class="prog" style="margin:8px 0 0"><div :style="{width: (dlDone/dlTotal*100)+'%'}" /></div>
-        <div style="font-size:11px;color:var(--dim);margin-top:6px">
-          insightface 模型为非商业许可，不随程序分发、由你按需下载；可设置下载代理
-          <input v-model="proxy" placeholder="http://127.0.0.1:10808（可选）" style="width:220px;padding:4px 8px;font-size:12px" />
+        <div v-if="dlRunning" class="prog" style="margin:8px 0 0"><div :style="{width: dlPct+'%'}" /></div>
+        <details style="margin-top:10px">
+          <summary style="cursor:pointer;font-size:12px">网络设置（GitHub 加速镜像 / 下载代理）</summary>
+          <div style="margin-top:8px;font-size:12px">
+            <div style="color:var(--dim);margin-bottom:4px">GitHub 镜像前缀（按序尝试，失败回落直连；删空 = 仅直连）：</div>
+            <div v-for="(_, i) in netMirrors" :key="i" style="display:flex;gap:6px;margin-bottom:4px">
+              <input v-model="netMirrors[i]" type="text" style="flex:1;padding:4px 8px;font-size:12px"
+                     placeholder="https://ghfast.top" />
+              <button class="ghost" style="padding:2px 8px" @click="netMirrors.splice(i, 1)">删</button>
+            </div>
+            <button class="ghost" style="padding:2px 10px" @click="netMirrors.push('')">+ 添加镜像</button>
+            <div style="color:var(--dim);margin:8px 0 4px">HTTP 代理（对全部下载生效，可空）：</div>
+            <input v-model="netProxy" type="text" style="width:280px;padding:4px 8px;font-size:12px"
+                   placeholder="http://127.0.0.1:10808" />
+            <div style="margin-top:8px">
+              <button class="act" style="padding:5px 14px;font-size:12px" @click="saveNet">保存网络设置</button>
+            </div>
+          </div>
+        </details>
+        <div style="font-size:11px;color:var(--dim);margin-top:8px">
+          insightface 人脸模型为非商业许可，不随程序分发、由你按需下载。
         </div>
       </div>
       <div v-if="state?.photos?.length" class="stat-row">

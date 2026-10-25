@@ -321,8 +321,17 @@ def system_detect():
 @app.route("/api/models/download", methods=["POST"])
 def models_download():
     body = request.json or {}
-    r = models_mod.start_download(body.get("id", ""), body.get("proxy", ""))
+    r = models_mod.start_download(body.get("id", ""))
     return jsonify({"ok": bool(r), "error": None if r else "下载进行中"})
+
+@app.route("/api/net/settings", methods=["GET", "POST"])
+def net_settings():
+    if request.method == "POST":
+        body = request.json or {}
+        models_mod.save_net_settings(body.get("github_mirrors", []),
+                                     body.get("http_proxy", ""))
+        return jsonify({"ok": True})
+    return jsonify(models_mod.load_net_settings())
 
 @app.route("/api/models/progress")
 def models_progress():
