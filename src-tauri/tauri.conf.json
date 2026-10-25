@@ -39,6 +39,11 @@
     ],
     "resources": {
       "../dist-backend/jury-backend.exe": "dist-backend/jury-backend.exe"
+    },
+    "windows": {
+      "nsis": {
+        "compression": "lzma"
+      }
     }
   }
 }
