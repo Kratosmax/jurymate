@@ -26,3 +26,5 @@ jurymate.key
 .keys/
 .keys/
 jurymate.key
+build-backend/
+dist-backend/
