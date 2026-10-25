@@ -33,3 +33,19 @@
 - 首次 build 的坑：`plugins`（复数）字段名；signer generate 参数经 npx 直传
   （`npm run` 的 `--` 分隔符会吞参）；pubkey 必须是真实 minisign 公钥
 
+
+## 装机实测轮（2026-10-25 晚，用户手动安装+反馈驱动）
+
+- **CORS preflight 失败（用户实测抓到的发布级 bug）**：点"开始整理"只发
+  OPTIONS 不发 POST——打包版 sidecar 的 Flask 自动 OPTIONS 响应缺 CORS 头
+  （浏览器开发模式同源代理掩盖）。修复：OPTIONS before_request 短路 +
+  after_request 全套头（含 Max-Age）。**流程教训：改后端代码后必须重打
+  sidecar/安装包再交用户验收**（本次曾让用户装了 CORS 修复前的包）
+- **正式版无控制台**（用户需求）：sidecar 打双 exe（默认 --noconsole /
+  debug 版带控制台），Rust 按 %APPCONFIG%/settings.json 的 debug 开关选择；
+  后端日志落 %LOCALAPPDATA%/JuryMate/logs/backend.log（滚动 5×2MB）
+- identifier 改 com.jurymate.desktop（.app 结尾与 macOS 冲突警告）
+- **NSIS /S 静默安装挂起**仍未解（UI 模式正常）：现象 /S 后进程挂起无产物、
+  且安装路径是 %LOCALAPPDATA%/com.jurymate.desktop（identifier 命名）——
+  待 NSIS /LOG 深挖；interim 方案：用户手动 UI 安装（正常）或绿色版
+- **装机验证遗留**：CORS 修复后的安装包需要用户重装+复测"开始整理"
