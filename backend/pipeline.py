@@ -282,6 +282,7 @@ def decide_group(members: list[int], photos: list[dict], settings: dict,
     for i in members:
         ph = photos[i]
         ph["group_id"] = gid
+        ph.setdefault("manual_winner", False)   # fresh 图显式落字段，消除 state 歧义
         if ph["aesthetic"] is not None and ph["aesthetic"] < min_score \
                 and "低分" not in ph["reject_reasons"]:
             ph["reject_reasons"].append("低分")

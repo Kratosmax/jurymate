@@ -132,17 +132,25 @@ def start():
         try:
             def progress(done, total, name):
                 TASK.update(done=done, total=total, stage=name)
-            # 增量：同目录已有人工决策，只补新图
+            # 增量：同目录已有人工决策，只补新图。
+            # 磁盘 state 是唯一事实源——用户删掉它 = 明确要重置，内存旧态
+            # （含 manual_winner）必须作废、退化为全量重扫。
+            # （实测教训：删磁盘缓存后点增量补扫，内存旧态的"人工召回"永远残留）
             if incremental and STATE["photos"] \
                     and Path(STATE["folder"]).resolve() == Path(folder).resolve():
                 with _SNAPSHOT_LOCK:
-                    n_new = pipeline.add_new_photos(
-                        folder, STATE["photos"], STATE["groups"],
-                        Path(folder) / ".cullmate", STATE["settings"], progress)
-                TASK.update(done=len(STATE["photos"]), total=len(STATE["photos"]),
-                            stage=f"增量完成：新增 {n_new} 张")
-                save_state()
-                return
+                    STATE.update(photos=[], groups=[])
+                    load_state(folder)
+                    do_incremental = bool(STATE["photos"])   # 磁盘无 state → 退化为全量
+                if do_incremental:
+                    with _SNAPSHOT_LOCK:
+                        n_new = pipeline.add_new_photos(
+                            folder, STATE["photos"], STATE["groups"],
+                            Path(folder) / ".cullmate", STATE["settings"], progress)
+                    TASK.update(done=len(STATE["photos"]), total=len(STATE["photos"]),
+                                stage=f"增量完成：新增 {n_new} 张")
+                    save_state()
+                    return
             # 从磁盘恢复进度（跨会话续做）
             if load_state(folder):
                 refresh_statuses()
