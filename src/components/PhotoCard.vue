@@ -6,6 +6,7 @@ const props = defineProps<{
   scoreLabel?: string
   scoreColor?: string
   note?: string
+  badge?: string
 }>()
 defineEmits<{ click: [] }>()
 
@@ -23,6 +24,9 @@ function scoreColorOf(s: number | null) {
   <div class="card" :class="{ winner: photo.status === 'winner' }" @click="$emit('click')">
     <img :src="photo.thumb_grid" loading="lazy" />
     <div class="score" :style="{ color }" :title="note">{{ scoreText }}</div>
+    <div v-if="badge" class="aid" style="position: absolute; top: 8px; left: 8px; z-index: 2;
+         background: rgba(226, 185, 59, .92); color: #1a1a1a; padding: 2px 9px;
+         border-radius: 6px; font-size: 11px;">{{ badge }}</div>
     <div class="cap">
       <b>{{ photo.name }}</b>
       <span>
