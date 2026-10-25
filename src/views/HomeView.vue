@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { api, type State } from '../api'
 
 const props = defineProps<{ state: State | null }>()
@@ -43,6 +43,27 @@ async function poll() {
 }
 onBeforeUnmount(() => clearInterval(timer))
 
+// 模型就绪检查（首启动向导）
+const sys = ref<any>(null)
+const dlRunning = ref(false)
+const dlId = ref('')
+const dlDone = ref(0)
+const dlTotal = ref(1)
+const proxy = ref('')
+async function checkSys() {
+  try { sys.value = await (await fetch('/api/system/detect')).json() } catch {}
+}
+onMounted(checkSys)
+async function dlModel(id: string) {
+  dlRunning.value = true; dlId.value = id; dlDone.value = 0; dlTotal.value = 1
+  await fetch('/api/models/download', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id, proxy: proxy.value }) })
+  const timer = setInterval(async () => {
+    const p = await (await fetch('/api/models/progress')).json()
+    dlDone.value = p.done; dlTotal.value = p.total
+    if (!p.running) { clearInterval(timer); dlRunning.value = false; checkSys() }
+  }, 500)
+}
 const frac = () => (total.value ? done.value / total.value : 0)
 const etaText = () => {
   const f = frac()
@@ -76,6 +97,24 @@ const etaText = () => {
         <div class="prog"><div :style="{ width: frac() * 100 + '%' }" /></div>
         <div style="text-align: center; color: var(--dim); font-size: 13px">
           {{ stage }} {{ done }}/{{ total }}{{ etaText() }}
+        </div>
+      </div>
+      <div v-if="sys && sys.models.some((m: any) => m.installed === false)" class="hintbar" style="text-align:left">
+        <b>模型就绪检查</b>（检测到 {{ sys.backend_hint }}）
+        <div v-for="m in (sys.models as any[])" :key="m.id" style="display:flex;align-items:center;gap:10px;margin-top:6px">
+          <span style="flex:1">{{ m.name }} · {{ m.size_mb }}MB</span>
+          <span v-if="m.installed === true" style="color:var(--good)">✓ 已就绪</span>
+          <span v-else-if="m.installed === null" style="color:var(--dim)">首次评分自动下载</span>
+          <template v-else>
+            <button class="ghost" :disabled="dlRunning" @click="dlModel(m.id)">
+              {{ dlRunning && dlId === m.id ? `下载中 ${Math.round(dlDone/dlTotal*100)}%` : '下载' }}
+            </button>
+          </template>
+        </div>
+        <div v-if="dlRunning" class="prog" style="margin:8px 0 0"><div :style="{width: (dlDone/dlTotal*100)+'%'}" /></div>
+        <div style="font-size:11px;color:var(--dim);margin-top:6px">
+          insightface 模型为非商业许可，不随程序分发、由你按需下载；可设置下载代理
+          <input v-model="proxy" placeholder="http://127.0.0.1:10808（可选）" style="width:220px;padding:4px 8px;font-size:12px" />
         </div>
       </div>
       <div v-if="state?.photos?.length" class="stat-row">

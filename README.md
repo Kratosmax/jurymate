@@ -1,7 +1,85 @@
-# Tauri + Vue + TypeScript
+<div align="center">
 
-This template should help get you started developing with Vue 3 and TypeScript in Vite. The template uses Vue 3 `<script setup>` SFCs, check out the [script setup docs](https://v3.vuejs.org/api/sfc-script-setup.html#sfc-script-setup) to learn more.
+# ⚖️ JuryMate
 
-## Recommended IDE Setup
+**AI 选片搭档 —— AI 陪审，你是法官**
 
-- [VS Code](https://code.visualstudio.com/) + [Vue - Official](https://marketplace.visualstudio.com/items?itemName=Vue.volar) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+*A local-first AI photo culling companion. The AI nominates, you judge.*
+
+</div>
+
+---
+
+JuryMate 把一次拍摄中的几十上百张照片自动完成**技术初筛（失焦/闭眼/过曝/欠曝）、
+连拍归组、默认选片与胜出图评分**；只在「AI 拿不准」的地方请你拍板，
+落选片全部保留、随时复查召回。
+
+> 全程本地推理，**零 LLM token**。AMD / NVIDIA / Apple Silicon / CPU 全硬件支持。
+
+## 为什么是「陪审团」
+
+大多数 AI 选片工具替你做决定。JuryMate 的哲学相反：
+**AI 是陪审团，负责初筛和提名；你是法官，只裁决「AI 分差小」的组。**
+每张落选片都保留着 AI 给出的淘汰理由，复查、改判、召回，由你说了算。
+
+## 功能
+
+- 📥 **导入**：拖入文件夹，RAW（ARW/CR3/NEF/RAF/DNG…）毫秒级提取内嵌预览
+- 🔬 **技术初筛**：失焦（脸部区域锐度）、闭眼（MediaPipe EAR）、过曝/欠曝；
+  无脸照片自动豁免"失焦"硬判（背景虚化的背影人像不会被误杀）
+- 🗂️ **连拍归组**：拍摄时间 + 感知哈希双信号，同场景连拍归入同组
+- 🏆 **默认选片**：组内综合分最高者暂定胜出，**只有前两名分差 <0.35 分才需要你**
+- ⚔️ **PK 决策流**：全键盘 `←→` 选图 / `Enter` 定胜者 / `↑↓` 全要全不要 / `Z` 撤销
+- 📊 **5 分制审美评分**：MUSIQ 无参考质量模型，胜出图自动打分
+- 🔁 **复查召回**：落选片按原因分组、按分排序，一键召回（补评分）
+- 📦 **一键归类**：winners/ 与 rejects/ 双目录，RAW+JPG+XMP 整组随迁
+- 🚫 **隐私**：不上传任何照片，不调用任何云端 API
+
+## 硬件支持
+
+首次启动自动检测显卡并推荐推理后端：
+
+| 硬件 | 后端 |
+|---|---|
+| NVIDIA（CUDA） | onnxruntime-gpu |
+| AMD / Intel（Windows） | onnxruntime-directml |
+| Apple Silicon | CoreML |
+| 无独显 | CPU |
+
+模型按需下载（约 440MB），支持自定义网络代理；**不会捆绑在任何安装包里**。
+
+## 开发
+
+```bash
+npm install
+npm run tauri dev      # 桌面开发模式（需手动另起 backend，见下）
+```
+
+Python 后端（sidecar）：
+
+```bash
+cd backend
+pip install -r ../requirements.txt   # 需要 Python 3.11
+python app.py --port 5090 --no-browser
+```
+
+打包发布：
+
+```bash
+npm run tauri build                  # 出 NSIS 安装包
+# sidecar exe：cd backend && pyinstaller --name jury-backend --onefile app.py
+```
+
+## 许可证与致谢
+
+- 本项目代码：MIT
+- 灵感与交互借鉴 [pianke（片刻）](https://github.com/woshidandan/pianke)（MIT）
+- 人脸模型 [buffalo_l](https://github.com/deepinsight/insightface)（insightface model zoo）为**非商业许可**，
+  因此本项目的安装包**不包含任何模型权重**，模型由用户按需下载
+- [MediaPipe](https://developers.google.com/mediapipe)（Apache-2.0）、
+  [pyiqa](https://github.com/chaofengc/IQA-PyTorch)（Apache-2.0）、
+  [rawpy](https://github.com/letmaik/rawpy)（LGPL）
+
+## 状态
+
+🚧 v0.1 — 桌面应用骨架已可运行，发布物料持续完善中。

@@ -312,6 +312,22 @@ def organize():
     plan["moved"] = len(moves)
     return jsonify({"ok": True, **plan})
 
+import models as models_mod
+
+@app.route("/api/system/detect")
+def system_detect():
+    return jsonify(models_mod.detect())
+
+@app.route("/api/models/download", methods=["POST"])
+def models_download():
+    body = request.json or {}
+    r = models_mod.start_download(body.get("id", ""), body.get("proxy", ""))
+    return jsonify({"ok": bool(r), "error": None if r else "下载进行中"})
+
+@app.route("/api/models/progress")
+def models_progress():
+    return jsonify(models_mod.progress())
+
 @app.route("/api/export_csv", methods=["POST"])
 def export_csv():
     """胜出清单 CSV（utf-8-sig，Excel 直开；衔接调色流程的选片输入）。"""

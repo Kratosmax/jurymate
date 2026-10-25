@@ -36,8 +36,25 @@ export interface State {
   settings: Record<string, number>
 }
 
+// Tauri webview 的 origin 不是后端：需要绝对 baseUrl；浏览器/vite 模式走相对路径
+let BASE = ''
+let baseReady: Promise<void> | null = null
+async function initBase() {
+  if (!baseReady) {
+    baseReady = (async () => {
+      const t = (window as any).__TAURI_INTERNALS__ ?? (window as any).__TAURI__
+      if (t) {
+        const { invoke } = await import('@tauri-apps/api/core')
+        BASE = `http://127.0.0.1:${await invoke<number>('backend_port')}`
+      }
+    })().catch(() => {})
+  }
+  await baseReady
+}
+
 async function req<T = any>(path: string, body?: unknown, method?: string): Promise<T> {
-  const r = await fetch(path, {
+  await initBase()
+  const r = await fetch(BASE + path, {
     method: method ?? (body !== undefined ? 'POST' : 'GET'),
     headers: { 'Content-Type': 'application/json' },
     body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -45,8 +62,18 @@ async function req<T = any>(path: string, body?: unknown, method?: string): Prom
   return r.json()
 }
 
+function absT(p: Photo): Photo {
+  return BASE && !p.thumb_view.startsWith('http')
+    ? { ...p, thumb_view: BASE + p.thumb_view, thumb_grid: BASE + p.thumb_grid }
+    : p
+}
+
 export const api = {
-  state: () => req<State>('/api/state'),
+  async state(): Promise<State> {
+    await initBase()
+    const s = await req<State>('/api/state')
+    return { ...s, photos: s.photos.map(absT) }
+  },
   start: (folder: string, incremental: boolean) =>
     req<{ ok: boolean; error?: string }>('/api/start', { folder, incremental }),
   progress: () => req<{ running: boolean; done: number; total: number; stage: string; error: string | null }>('/api/progress'),
