@@ -5,6 +5,8 @@
 """
 import json
 import logging
+import logging.handlers
+import os
 import shutil
 import threading
 from pathlib import Path
@@ -13,7 +15,18 @@ from flask import Flask, jsonify, request, send_from_directory
 
 import pipeline
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+# 日志：始终落 %LOCALAPPDATA%/JuryMate/logs/backend.log（滚动 5×2MB）；
+# 控制台输出仅在 DEBUG 环境变量存在时开启（noconsole 打包无控制台）
+_DATA_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "JuryMate" / "logs"
+_DATA_DIR.mkdir(parents=True, exist_ok=True)
+_fh = logging.handlers.RotatingFileHandler(_DATA_DIR / "backend.log",
+                                           maxBytes=2 * 1024 * 1024, backupCount=5,
+                                           encoding="utf-8")
+_fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+logging.basicConfig(level=logging.INFO, handlers=[_fh],
+                    format="%(asctime)s %(levelname)s %(message)s")
+if os.environ.get("JURYMATE_DEBUG"):
+    logging.basicConfig(level=logging.DEBUG)
 log = logging.getLogger("cullmate")
 
 # 前端静态目录仅源码模式存在（浏览器访问）；PyInstaller 打包模式下
@@ -25,11 +38,20 @@ app = Flask(__name__, static_folder=str(_FRONTEND) if _FRONTEND.exists() else No
 # CORS：Tauri webview 的 origin（http://tauri.localhost）与 sidecar（127.0.0.1）
 # 跨域——没有这个头，打包版前端的所有 API 响应都会被 webview 拦截（实测数据全空）。
 # 本地单机工具，全开是安全默认。
+# OPTIONS 用 before_request 短路：Flask 自动 OPTIONS 响应曾被观察到缺失
+# CORS 头（打包版 preflight 失败 → POST 永远不发），短路处理根除该路径。
+@app.before_request
+def _cors_preflight():
+    if request.method == "OPTIONS":
+        resp = app.make_default_options_response()
+        return _cors_headers(resp)
+
 @app.after_request
-def _cors(resp):
+def _cors_headers(resp):
     resp.headers["Access-Control-Allow-Origin"] = "*"
-    resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
     resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    resp.headers["Access-Control-Max-Age"] = "86400"
     return resp
 
 STATE = {"photos": [], "groups": [], "folder": None, "settings": {}, "undo_stack": []}
