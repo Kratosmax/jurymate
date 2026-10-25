@@ -17,3 +17,19 @@
   体积是 torch 依赖的结构性成本
 - 未来重开条件：pyiqa 官方 ONNX/量化权重，或拿到标注数据可重校准
 
+
+
+## PinNote 逻辑移植 + 自动更新（2026-10-25 晚）
+
+- **模型下载器双通道**（PinNote UpdateNetworkSettings 逻辑移植）：
+  GitHub 镜像前缀列表（默认 ghfast.top/gh-proxy.com，优先级降级）+ HTTP 代理 +
+  直连兜底；net_settings.json 持久化；前端设置面板（镜像增删/代理）
+- **自动更新**：tauri-plugin-updater（对应 PinNote 独立 Updater 的角色）——
+  minisign 签名校验（密钥对已生成 .keys/jurymate.key[.pub]，**私钥已 gitignore**）、
+  启动静默检查 + 手动升级 UI；端点占位 GitHub Releases latest.json
+- 三模型全部转 manual 模式（可走镜像下载）；musiq 源切 hf-mirror
+- bundle 产物带 .sig 签名文件；发布流程：签名环境变量
+  TAURI_SIGNING_PRIVATE_KEY + latest.json（tauri build 自动产出 updater 产物）
+- 首次 build 的坑：`plugins`（复数）字段名；signer generate 参数经 npx 直传
+  （`npm run` 的 `--` 分隔符会吞参）；pubkey 必须是真实 minisign 公钥
+

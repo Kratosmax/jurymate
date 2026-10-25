@@ -22,3 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+jurymate.key
+.keys/
+.keys/
+jurymate.key
