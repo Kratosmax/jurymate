@@ -46,8 +46,12 @@ async function initBase() {
     baseReady = (async () => {
       const t = (window as any).__TAURI_INTERNALS__ ?? (window as any).__TAURI__
       if (t) {
-        const { invoke } = await import('@tauri-apps/api/core')
-        BASE = `http://127.0.0.1:${await invoke<number>('backend_port')}`
+        try {
+          const { invoke } = await import('@tauri-apps/api/core')
+          BASE = `http://127.0.0.1:${await invoke<number>('backend_port')}`
+        } catch {
+          BASE = 'http://127.0.0.1:5090'   // invoke 失败兜底（约定端口）
+        }
       }
     })().catch(() => {})
   }

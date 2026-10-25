@@ -22,6 +22,16 @@ _FRONTEND = Path(__file__).resolve().parent.parent / "frontend"
 app = Flask(__name__, static_folder=str(_FRONTEND) if _FRONTEND.exists() else None,
             static_url_path="")
 
+# CORS：Tauri webview 的 origin（http://tauri.localhost）与 sidecar（127.0.0.1）
+# 跨域——没有这个头，打包版前端的所有 API 响应都会被 webview 拦截（实测数据全空）。
+# 本地单机工具，全开是安全默认。
+@app.after_request
+def _cors(resp):
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    return resp
+
 STATE = {"photos": [], "groups": [], "folder": None, "settings": {}, "undo_stack": []}
 TASK = {"running": False, "done": 0, "total": 0, "stage": "", "error": None}
 _LOCK = threading.Lock()          # 启动任务互斥
