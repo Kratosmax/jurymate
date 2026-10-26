@@ -87,13 +87,21 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri build
 
+      # 必须连同 .sig 一起收集：latest.json 要用它，缺了会被下面的步骤拒绝
       - name: Collect artifacts
         shell: bash
         run: |
           mkdir -p out
           cp src-tauri/target/release/bundle/nsis/*-setup.exe out/ 2>/dev/null || true
+          cp src-tauri/target/release/bundle/nsis/*-setup.exe.sig out/ 2>/dev/null || true
           cp src-tauri/target/release/bundle/msi/*.msi out/ 2>/dev/null || true
+          cp src-tauri/target/release/bundle/msi/*.msi.sig out/ 2>/dev/null || true
+          echo "--- 收集到的文件 ---"
           ls -lh out/
+          if ! ls out/*-setup.exe.sig >/dev/null 2>&1; then
+            echo "::error::未生成 NSIS 安装包签名，检查 TAURI_SIGNING_PRIVATE_KEY 是否已配置"
+            exit 1
+          fi
 
       # 便携版：exe + 随包 sidecar + 前端产物，解压即用
       - name: Build portable zip
