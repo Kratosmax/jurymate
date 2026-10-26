@@ -1,13 +1,20 @@
 """模型管理：硬件检测 → 推荐后端；模型清单/安装状态；双通道下载器。
 
-下载网络策略（参考 PinNote 的设计逻辑）：
-- **GitHub 镜像前缀列表**（优先级降级重试）：对 GitHub 域 URL 依次尝试
-  用户配置的镜像前缀，全部失败回落直连
-- **HTTP 代理**：对任意域生效（含 Google storage 的 FaceLandmarker）
-- 直连兜底：未配置任何代理/镜像时直接尝试
+下载网络策略（全部由用户决定，不写死）：
+- **镜像站开关**：`use_mirror` 默认 **False**，即默认从模型原仓库直连下载。
+  用户显式开启后，才对 GitHub 域 URL 依次尝试 `github_mirrors` 里的前缀，
+  全部失败仍回落直连。
+- **HTTP 代理**：`http_proxy` 独立生效，与镜像站开关无关。填了就通过代理
+  访问源站（含 Google storage 的 FaceLandmarker / HuggingFace 的 MUSIQ）。
+- 两者都不配 = 纯直连。
 网络设置持久化到 <数据目录>/net_settings.json（见 paths.py）。
 
-三条模型的获取方式各不同（都已被管线隐式依赖）：
+三条模型均从各自原仓库下载（不经过任何第三方选片项目）：
+- face_landmarker.task：Google MediaPipe 官方 storage
+- buffalo_l：insightface 官方 GitHub release
+- musiq 权重：pyiqa 作者的 HuggingFace 仓库
+
+获取方式（都已被管线隐式依赖）：
 - face_landmarker.task：闭眼检测（MediaPipe Tasks）——本模块下载
 - buffalo_l：insightface 人脸检测/识别——本模块下载；未下载时 insightface
   首次调用也会自行下载到同一目录（两条路径落到同一处）
@@ -17,10 +24,12 @@
 """
 import json
 import logging
+import os
 import threading
 import urllib.request
 from pathlib import Path
 
+import hardware
 import paths
 
 log = logging.getLogger("jurymate.models")
@@ -29,37 +38,49 @@ DL = {"running": False, "done": 0, "total": 1, "id": "", "error": None}
 
 NET_SETTINGS_PATH = paths.data_dir() / "net_settings.json"
 
-# 国内常见 GitHub 加速镜像（默认表；用户可在设置里增删/调序）
+# 常见 GitHub 加速镜像（仅作可选项呈现；默认不启用，见 use_mirror）
 DEFAULT_GITHUB_MIRRORS = [
     "https://ghfast.top",
     "https://gh-proxy.com",
 ]
 
 def load_net_settings() -> dict:
-    """读网络设置；无配置时给默认镜像表+直连兜底（PinNote Normalize 思路）。"""
+    """读网络设置。
+
+    默认全关：不启用镜像、不设代理，直连源站。
+    旧配置里若已有 github_mirrors 而无 use_mirror 字段，视为用户曾开启过
+    镜像（沿用旧行为，避免升级后突然走直连而卡住）。
+    """
     try:
         s = json.loads(NET_SETTINGS_PATH.read_text(encoding="utf-8"))
     except Exception:
         s = {}
-    mirrors = s.get("github_mirrors")
-    if not isinstance(mirrors, list):
-        mirrors = DEFAULT_GITHUB_MIRRORS
-    mirrors = [str(m).rstrip("/") for m in mirrors if str(m).strip()]
-    proxy = s.get("http_proxy") or None
-    return {"github_mirrors": mirrors, "http_proxy": proxy}
+    raw_mirrors = s.get("github_mirrors")
+    if not isinstance(raw_mirrors, list):
+        raw_mirrors = DEFAULT_GITHUB_MIRRORS
+    mirrors = [str(m).rstrip("/") for m in raw_mirrors if str(m).strip()]
+    use_mirror = s.get("use_mirror")
+    if not isinstance(use_mirror, bool):
+        use_mirror = False
+    proxy = (s.get("http_proxy") or "").strip() or None
+    return {"use_mirror": use_mirror, "github_mirrors": mirrors, "http_proxy": proxy}
 
-def save_net_settings(mirrors: list[str], http_proxy: str) -> None:
+def save_net_settings(use_mirror: bool, mirrors: list[str], http_proxy: str) -> None:
     NET_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
     NET_SETTINGS_PATH.write_text(json.dumps(
-        {"github_mirrors": [m.rstrip("/") for m in mirrors if str(m).strip()],
+        {"use_mirror": bool(use_mirror),
+         "github_mirrors": [m.rstrip("/") for m in mirrors if str(m).strip()],
          "http_proxy": http_proxy or ""}, ensure_ascii=False, indent=1), encoding="utf-8")
 
 def _routes_for(url: str, net: dict) -> list[tuple[str, str]]:
-    """为 URL 生成按序尝试的下载路由列表 [(url, 通道名)]：
-    GitHub 域 → 镜像前缀列表 + 直连兜底；其他域 → 直连（代理由 handler 统一处理）。"""
+    """为 URL 生成按序尝试的下载路由列表 [(url, 通道名)]。
+
+    仅当用户开启镜像站、且 URL 属 GitHub 域时才插入镜像前缀；
+    其余一律直连（代理由 opener 统一处理，不影响路由本身）。
+    """
     is_github = "github.com" in url or "raw.githubusercontent.com" in url
     routes = []
-    if is_github:
+    if net.get("use_mirror") and is_github:
         for m in net.get("github_mirrors", []):
             routes.append((f"{m}/{url}", f"镜像 {m}"))
     routes.append((url, "直连"))
@@ -70,6 +91,18 @@ def _opener(http_proxy: str | None):
         return urllib.request.build_opener(
             urllib.request.ProxyHandler({"http": http_proxy, "https": http_proxy}))
     return urllib.request.build_opener()
+
+def _apply_proxy_env(http_proxy: str | None) -> None:
+    """把代理写进进程环境变量，供**库自身的下载器**使用。
+
+    本模块的下载器走 _opener，但 insightface 用 requests、torch.hub 用
+    urlopen，它们只认环境变量。不设这一步，用户填的代理对"库自动下载"
+    完全无效——那正是最需要代理的场景。"""
+    for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+        if http_proxy:
+            os.environ[k] = http_proxy
+        else:
+            os.environ.pop(k, None)
 
 MODELS = [
     {
@@ -109,40 +142,21 @@ MODELS = [
 ]
 
 def detect() -> dict:
-    """硬件与推理后端检测 + 模型安装状态。"""
-    providers, gpu = [], ""
-    try:
-        import onnxruntime as ort
-        providers = ort.get_available_providers()
-    except Exception as e:
-        log.warning("detect: onnxruntime 不可用 %s", e)
-    try:
-        import subprocess
-        out = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             "(Get-CimInstance Win32_VideoController).Name"],
-            capture_output=True, text=True, timeout=15)
-        names = [l.strip() for l in out.stdout.splitlines() if l.strip()]
-        real = [n for n in names if "virtual" not in n.lower()]
-        gpu = " / ".join(real or names)
-    except Exception:
-        gpu = ""
-    if "CUDAExecutionProvider" in providers:
-        backend, hint = "cuda", "N 卡：CUDA EP（推荐）"
-    elif "DmlExecutionProvider" in providers:
-        backend, hint = "dml", "AMD/Intel 显卡：DirectML EP（推荐）"
-    elif "CoreMLExecutionProvider" in providers:
-        backend, hint = "coreml", "Apple：CoreML EP"
-    else:
-        backend, hint = "cpu", "纯 CPU 推理"
+    """硬件与推理后端检测 + 模型安装状态。
+
+    EP 的选择交给 hardware 模块按显卡厂商决定，这里只做转述，
+    避免出现"界面提示推荐 X、实际跑 Y"的分裂。
+    """
+    hw = hardware.describe_backend()
     models = []
     for m in MODELS:
-        installed = None if m["mode"] == "auto" else _installed(m)
         models.append({"id": m["id"], "name": m["name"], "size_mb": m["size_mb"],
-                       "installed": installed, "mode": m["mode"]})
+                       "installed": _installed(m)})
     net = load_net_settings()
-    return {"providers": providers, "gpu": gpu, "backend": backend,
-            "backend_hint": hint, "models": models, "net": net}
+    return {"providers": hw["providers"], "gpu": hw["gpu"],
+            "backend": hw["backend"], "backend_hint": hw["backend_hint"],
+            "vendor": hw["vendor"], "ranked": hw["ranked"],
+            "models": models, "net": net}
 
 def _download_via_routes(routes, dest: Path, http_proxy: str | None, dl: dict) -> None:
     """按路由列表降级下载；代理对每条路由统一生效。"""
@@ -213,6 +227,7 @@ def download(model_id: str) -> None:
         DL.update(running=False, done=1, total=1, error=None)
         return
     net = load_net_settings()
+    _apply_proxy_env(net.get("http_proxy"))
     routes = _routes_for(m["url"], net)
     if m.get("unpack") == "zip":
         # zip 型（buffalo_l）：先下到同名 .zip，解压成目录后再清理

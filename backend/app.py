@@ -29,6 +29,11 @@ if os.environ.get("JURYMATE_DEBUG"):
     logging.basicConfig(level=logging.DEBUG)
 log = logging.getLogger("jurymate")
 
+# 启动即把用户配置的代理写进环境变量：insightface(requests)/torch.hub(urlopen)
+# 的自动下载只认环境变量，晚设一步就会在用户填了代理的情况下仍走直连。
+import models as models_mod  # noqa: E402
+models_mod._apply_proxy_env(models_mod.load_net_settings().get("http_proxy"))
+
 # 前端静态目录仅源码模式存在（浏览器访问）；PyInstaller 打包模式下
 # 前端由 Tauri webview 提供，Flask 只承担 API。
 # 前端产物在 dist/（vite build 输出），不是 frontend/。
@@ -403,8 +408,15 @@ def models_download():
 def net_settings():
     if request.method == "POST":
         body = request.json or {}
-        models_mod.save_net_settings(body.get("github_mirrors", []),
-                                     body.get("http_proxy", ""))
+        use_mirror = bool(body.get("use_mirror"))
+        mirrors = body.get("github_mirrors", [])
+        proxy = body.get("http_proxy", "")
+        models_mod.save_net_settings(use_mirror, mirrors, proxy)
+        # 立刻生效：库自身的自动下载读环境变量
+        models_mod._apply_proxy_env((proxy or "").strip() or None)
+        log.info("net: use_mirror=%s mirrors=%d proxy=%s",
+                 use_mirror, len([m for m in mirrors if str(m).strip()]),
+                 "set" if (proxy or "").strip() else "none")
         return jsonify({"ok": True})
     return jsonify(models_mod.load_net_settings())
 

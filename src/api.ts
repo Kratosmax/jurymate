@@ -102,7 +102,7 @@ export const api = {
   systemDetect: () => req<any>('/api/system/detect'),
   modelsDownload: (id: string) => req<{ ok: boolean; error?: string | null }>('/api/models/download', { id }),
   modelsProgress: () => req<{ running: boolean; done: number; total: number; id: string; error: string | null }>('/api/models/progress'),
-  netSettingsGet: () => req<{ github_mirrors: string[]; http_proxy: string | null }>('/api/net/settings'),
-  netSettingsSave: (github_mirrors: string[], http_proxy: string) =>
-    req<{ ok: boolean }>('/api/net/settings', { github_mirrors, http_proxy }),
+  netSettingsGet: () => req<{ use_mirror: boolean; github_mirrors: string[]; http_proxy: string | null }>('/api/net/settings'),
+  netSettingsSave: (use_mirror: boolean, github_mirrors: string[], http_proxy: string) =>
+    req<{ ok: boolean }>('/api/net/settings', { use_mirror, github_mirrors, http_proxy }),
 }

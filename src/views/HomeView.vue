@@ -51,17 +51,23 @@ const dlDone = ref(0)
 const dlTotal = ref(1)
 const netMirrors = ref<string[]>([])
 const netProxy = ref('')
+const useMirror = ref(false)
 const dlPct = computed(() => dlTotal.value ? Math.round(dlDone.value / dlTotal.value * 100) : 0)
 async function checkSys() {
   try {
     sys.value = await api.systemDetect()
     netMirrors.value = [...(sys.value?.net?.github_mirrors ?? [])]
     netProxy.value = sys.value?.net?.http_proxy ?? ''
+    useMirror.value = !!sys.value?.net?.use_mirror
   } catch {}
 }
 onMounted(checkSys)
 async function saveNet() {
-  const r = await api.netSettingsSave(netMirrors.value.filter(s => s.trim()), netProxy.value.trim())
+  const r = await api.netSettingsSave(
+    useMirror.value,
+    netMirrors.value.filter(s => s.trim()),
+    netProxy.value.trim(),
+  )
   if (r.ok) { emit('toast', '网络设置已保存'); checkSys() }
 }
 async function dlModel(id: string) {
@@ -111,11 +117,10 @@ const etaText = () => {
         </div>
       </div>
       <div v-if="sys && sys.models.some((m: any) => m.installed === false)" class="hintbar" style="text-align:left">
-        <b>模型就绪检查</b>（检测到 {{ sys.backend_hint }}）
+        <b>模型就绪检查</b>（{{ sys.backend_hint }}<template v-if="sys.gpu">｜{{ sys.gpu }}</template>）
         <div v-for="m in (sys.models as any[])" :key="m.id" style="display:flex;align-items:center;gap:10px;margin-top:6px">
           <span style="flex:1">{{ m.name }} · {{ m.size_mb }}MB</span>
           <span v-if="m.installed === true" style="color:var(--good)">✓ 已就绪</span>
-          <span v-else-if="m.installed === null" style="color:var(--dim)">首次评分自动下载</span>
           <template v-else>
             <button class="ghost" :disabled="dlRunning" @click="dlModel(m.id)">
               {{ dlRunning && dlId === m.id ? `下载中 ${dlPct}%` : '下载' }}
@@ -124,18 +129,36 @@ const etaText = () => {
         </div>
         <div v-if="dlRunning" class="prog" style="margin:8px 0 0"><div :style="{width: dlPct+'%'}" /></div>
         <details style="margin-top:10px">
-          <summary style="cursor:pointer;font-size:12px">网络设置（GitHub 加速镜像 / 下载代理）</summary>
+          <summary style="cursor:pointer;font-size:12px">网络设置（下载源 / 镜像站 / 代理）</summary>
           <div style="margin-top:8px;font-size:12px">
-            <div style="color:var(--dim);margin-bottom:4px">GitHub 镜像前缀（按序尝试，失败回落直连；删空 = 仅直连）：</div>
-            <div v-for="(_, i) in netMirrors" :key="i" style="display:flex;gap:6px;margin-bottom:4px">
-              <input v-model="netMirrors[i]" type="text" style="flex:1;padding:4px 8px;font-size:12px"
-                     placeholder="https://ghfast.top" />
-              <button class="ghost" style="padding:2px 8px" @click="netMirrors.splice(i, 1)">删</button>
+            <div style="color:var(--dim);margin-bottom:6px">
+              默认从模型原仓库直连下载。国内网络不通时，可开启镜像站或填代理。
             </div>
-            <button class="ghost" style="padding:2px 10px" @click="netMirrors.push('')">+ 添加镜像</button>
-            <div style="color:var(--dim);margin:8px 0 4px">HTTP 代理（对全部下载生效，可空）：</div>
+
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px">
+              <input type="checkbox" v-model="useMirror" style="width:auto;margin:0" />
+              <span>使用 GitHub 镜像站（仅影响 GitHub 来源的模型）</span>
+            </label>
+
+            <template v-if="useMirror">
+              <div style="color:var(--dim);margin:0 0 4px">镜像前缀（按序尝试，全部失败回落直连）：</div>
+              <div v-for="(_, i) in netMirrors" :key="i" style="display:flex;gap:6px;margin-bottom:4px">
+                <input v-model="netMirrors[i]" type="text" style="flex:1;padding:4px 8px;font-size:12px"
+                       placeholder="https://ghfast.top" />
+                <button class="ghost" style="padding:2px 8px" @click="netMirrors.splice(i, 1)">删</button>
+              </div>
+              <button class="ghost" style="padding:2px 10px" @click="netMirrors.push('')">+ 添加镜像</button>
+            </template>
+
+            <div style="color:var(--dim);margin:10px 0 4px">
+              HTTP 代理（对所有下载生效，与镜像站互不冲突，可空）：
+            </div>
             <input v-model="netProxy" type="text" style="width:280px;padding:4px 8px;font-size:12px"
                    placeholder="http://127.0.0.1:10808" />
+            <div style="font-size:11px;color:var(--dim);margin-top:4px">
+              填了代理会同时用于程序内下载与模型库自身的下载。
+            </div>
+
             <div style="margin-top:8px">
               <button class="act" style="padding:5px 14px;font-size:12px" @click="saveNet">保存网络设置</button>
             </div>

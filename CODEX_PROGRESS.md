@@ -24,7 +24,7 @@ python verify_eyes.py         # 闭眼正例回归（需样图目录与模型缓
 | 子路径 | 内容 |
 |---|---|
 | `logs/backend.log` | 滚动日志（5×2MB） |
-| `net_settings.json` | GitHub 镜像前缀 / HTTP 代理 |
+| `net_settings.json` | 网络策略：`use_mirror` / `github_mirrors` / `http_proxy` |
 | `face_landmarker.task` | 闭眼检测模型（3.7MB） |
 | `insightface/models/buffalo_l/` | 人脸检测/识别（340MB，非商业许可，按需下载） |
 | `torch/hub/pyiqa/` | MUSIQ 权重（104MB） |
@@ -35,6 +35,41 @@ python verify_eyes.py         # 闭眼正例回归（需样图目录与模型缓
 
 照片目录下的会话状态在 **`.jurymate/`**（state.json / thumbs / recall_stats.json），
 用户删掉它 = 重置该目录进度。
+
+## 1.2 网络策略（全部由用户决定）
+
+`net_settings.json` 三个字段，默认全关：
+
+| 字段 | 默认 | 作用 |
+|---|---|---|
+| `use_mirror` | `false` | 开启后 GitHub 来源的模型才走镜像前缀，失败回落直连 |
+| `github_mirrors` | 两条常见镜像 | 镜像前缀表，仅 `use_mirror=true` 时生效 |
+| `http_proxy` | 空 | 独立生效，与镜像开关无关；填了就用于源站下载 |
+
+代理会同时写入进程环境变量（`HTTP_PROXY`/`HTTPS_PROXY`），因为
+insightface（`requests`）和 torch.hub（`urlopen`）的**自动下载只认环境变量**——
+不写这一步，用户填的代理对"库自动下载"完全无效。后端启动时即应用一次
+（`app.py` 顶部），保存设置时再应用一次。
+
+三条模型都从各自**原仓库**下载，不经过任何第三方选片项目：
+MediaPipe 官方 storage / insightface 官方 GitHub release / pyiqa 作者的 HuggingFace。
+
+## 1.3 推理后端（EP）选择
+
+EP 优先级**不写死**，由 `hardware.py` 按显卡厂商决定，再与 onnxruntime
+实际可用的 EP 求交集（没装的 EP 传进去会直接报错）：
+
+| 显卡厂商 | 首选 → 次选 |
+|---|---|
+| NVIDIA | CUDA → DML → CoreML |
+| AMD / Intel | DML → CUDA → CoreML |
+| Apple | CoreML → DML → CUDA |
+| 识别不出 | CUDA → DML → CoreML |
+
+CPU 永远兜底。首选 EP 没装时自动降级（N 卡只装了 DML 包仍会走 DML），
+`describe_backend()` 会在提示里补一句该装哪个包。
+`models.detect()` 只转述 `hardware` 的结论，不再自己判断——避免出现
+"界面提示推荐 X、实际跑 Y"的分裂。
 
 ## 2. 当前快照（最后核验 2026-10-26）
 
@@ -77,7 +112,8 @@ python verify_eyes.py         # 闭眼正例回归（需样图目录与模型缓
 | MUSIQ 审美评分（分段映射 5 分制） | `backend/aesthetic.py` |
 | 连拍分组（burst + phash） | `backend/group.py` |
 | 锐度/曝光信号与阈值 | `backend/signals.py` |
-| 模型清单/硬件检测/双通道下载 | `backend/models.py` |
+| 模型清单/下载器（镜像与代理策略） | `backend/models.py` |
+| 显卡检测与 EP 优先级 | `backend/hardware.py` |
 | 数据目录唯一根（含 TORCH_HOME 钉定） | `backend/paths.py` |
 | 前端四页（总览/决策/胜出/复查） | `src/views/*.vue` + `src/App.vue` |
 | API 客户端（全站唯一 fetch 出口） | `src/api.ts` |
@@ -121,7 +157,7 @@ python verify_eyes.py         # 闭眼正例回归（需样图目录与模型缓
   最终版交付物放用户指定位置；**用户安装目录与用户数据目录不可写入**
 - 依赖解释器可用 `JURYMATE_PY` 指定；本机开发环境为姊妹仓库 cullmate 的 venv
   （该 venv 装好了全部依赖，仅为开发便利，不是运行时依赖）
-- 模型下载双通道：GitHub 镜像前缀列表（降级重试）+ HTTP 代理 + 直连兜底
+- 网络策略由用户决定：镜像站默认关闭、代理独立可选，不写死任何加速方案
 - 「压缩版 agent 自查 / 高清版用户评审」双版本交付铁律
 - GUI 验证用 browser-use 黑盒测试（视觉证据 + DOM 双确认）
 

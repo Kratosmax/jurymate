@@ -16,6 +16,7 @@ import logging
 import cv2
 import numpy as np
 
+import hardware
 import paths
 
 try:
@@ -41,10 +42,8 @@ def _model_root() -> str:
     return str(paths.ensure("insightface"))
 
 def _providers() -> list[str]:
-    import onnxruntime as ort
-    avail = ort.get_available_providers()
-    prov = [p for p in ["DmlExecutionProvider", "CUDAExecutionProvider"] if p in avail]
-    return prov + ["CPUExecutionProvider"]
+    """EP 顺序由显卡厂商决定（见 hardware.py），CPU 兜底。"""
+    return hardware.ranked_providers()
 
 def _get():
     global _FACES
