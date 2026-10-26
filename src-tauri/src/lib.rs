@@ -113,8 +113,31 @@ fn spawn_backend(app: &tauri::AppHandle) -> Result<(), String> {
 fn kill_backend() {
     if let Some(mut c) = BACKEND_CHILD.lock().unwrap().take() {
         let _ = c.kill();
+        let _ = c.wait(); // 回收句柄，确保进程真的没了（否则文件仍被锁）
     }
 }
+
+/// 按可执行文件名扫掉残留 sidecar。
+///
+/// 只靠子进程句柄不够：进程可能是上一次会话遗留的、或句柄已丢失，
+/// 它们照样锁着 dist-backend/*.exe，让安装器覆盖失败。
+#[cfg(windows)]
+fn kill_backend_by_name() {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let _ = Command::new("taskkill")
+        .args(["/F", "/IM", "jury-backend.exe", "/T"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .status();
+    // debug 版同名规则不同，单独清
+    let _ = Command::new("taskkill")
+        .args(["/F", "/IM", "jury-backend-debug.exe", "/T"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .status();
+}
+
+#[cfg(not(windows))]
+fn kill_backend_by_name() {}
 
 #[tauri::command]
 fn backend_port() -> u16 {
@@ -141,6 +164,9 @@ pub fn run() {
         .setup(|app| {
             let handle = app.handle().clone();
             let _ = APP_HANDLE.set(handle.clone());
+            // 先清上一次会话可能残留的 sidecar：它们占着端口会让
+            // spawn_backend 直接复用旧进程（版本可能已不匹配）
+            kill_backend_by_name();
             std::thread::spawn(move || {
                 if let Err(e) = spawn_backend(&handle) {
                     eprintln!("[jurymate] backend: {}", e);
@@ -153,6 +179,16 @@ pub fn run() {
                 kill_backend();
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, event| {
+            // 关键：Updater 用 relaunch() 重启时窗口不一定会走 Destroyed，
+            // sidecar 会残留并锁住 dist-backend/*.exe，导致新版本安装器
+            // 报 "Error opening file for writing" 而无法覆盖。
+            // 在任何退出路径上都清理后端进程，并按名字兜底清残留。
+            if let tauri::RunEvent::Exit = event {
+                kill_backend();
+                kill_backend_by_name();
+            }
+        });
 }
