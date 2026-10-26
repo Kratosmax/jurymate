@@ -68,13 +68,17 @@ jobs:
           pip install --force-reinstall onnxruntime-directml
           pip install pyinstaller
 
-      # sidecar 必须是打包前就位的资源，否则 Tauri bundle 找不到
+      # sidecar 必须是打包前就位的资源，否则 Tauri bundle 找不到。
+      # build-backend/ 是构建产物目录（不入库），CI 里现建。
       - name: Build sidecar
         shell: bash
         run: |
+          mkdir -p build-backend dist-backend
           cd build-backend
-          pyinstaller --name jury-backend --onefile ../backend/app.py --noconfirm
-          ls -lh ../dist-backend/
+          pyinstaller --name jury-backend --onefile ../backend/app.py \
+            --distpath ../dist-backend --workpath ./work --specpath . --noconfirm
+          cd ..
+          ls -lh dist-backend/
 
       - name: Build Tauri bundles
         shell: bash

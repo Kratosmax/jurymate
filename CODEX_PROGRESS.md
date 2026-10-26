@@ -73,32 +73,49 @@ CPU 永远兜底。首选 EP 没装时自动降级（N 卡只装了 DML 包仍�
 
 ## 2. 当前快照（最后核验 2026-10-26）
 
-- 版本：0.1.0（版本源 `src-tauri/tauri.conf.json`）
-- 分支：master；基线提交：`20ea7b1`（CODEX_PROGRESS 重建）
-- remote：未配置（GitHub 仓库未创建，未发布）
-- 当前工作：本轮修 7 处缺陷（CSV 漏片 / 缩略图缓存路径 / 模型下载产物 /
-  u 键守卫 / 决策页跳过回弹 / 更新器配置残留 / Flask 静态目录），
-  另清掉误入库的 `__pycache__`；工作树含本轮未提交改动
-- 线上状态：未核验（无线上 Release）
-- **待用户**：重装最新 NSIS 包并复测「开始整理」全流程（CORS 修复的最终验证）；
-  提供 2-3 张正面人像含闭眼样本（闭眼阈值真数据校准）
+- 版本：0.1.0（版本源 `src-tauri/tauri.conf.json`，`package.json` 与
+  `Cargo.toml` 必须同步；CI 会校验三处与标签一致）
+- 分支：master；remote：`origin` → https://github.com/Kratosmax/jurymate
+- 仓库：**PUBLIC**，23 个提交，标签 `v0.1.0`
+- 当前工作：0.1.0 发布物料完成；打包版实机验证通过
+- 线上状态：见 §6 发布核验
+- **待用户**：提供 2-3 张正面人像含闭眼样本（闭眼阈值真数据校准）
+
+### 发布方式
+
+- 标签触发：推送 `v*` 标签 → `.github/workflows/release.yml` 自动构建并发布
+- 版本三处一致（tauri.conf.json / package.json / Cargo.toml）+ 标签一致，
+  任一不符 CI 直接失败
+- 签名私钥在 GitHub Secret `TAURI_SIGNING_PRIVATE_KEY`（本地副本在 `.keys/`，
+  已 gitignore）。**私钥不入库、不入日志、不入产物**
+- 资产矩阵：Full Setup（NSIS）+ Full ZIP（便携）。**不提供 Lite**：
+  后端是 Python sidecar（Flask + insightface + pyiqa + MediaPipe），依赖约
+  2GB 且需 Python 3.11，无法形成有意义的轻量包——此结论已写入 README 与
+  Release Notes，不是静默省略
+- 自动更新清单 `latest.json` 只收 NSIS 安装包（Tauri 只给它签名；手工压的
+  ZIP 无 `.sig`，写进清单会导致客户端验签失败）
+
+### 仓库体积约束
+
+历史曾误提交 457MB 的 sidecar exe（`5bff22e`、`13f2dff`），`.git` 一度达
+2.9GB。已用 `filter-branch` 清除并 gc，现 `.git` 约 0.4MB。
+**`dist-backend/`、`build-backend/`、`temp/` 永远不得入库**（已在 .gitignore）。
 
 ## 3. 当前待办
 
-1. 【待用户】重装最新安装包复测 CORS 修复（安装包见 bundle/nsis/）
-2. 【待用户】正面人像含闭眼样本 → EAR 阈值真数据校准
-3. NSIS /S 静默安装挂起（UI 模式正常）——待 NSIS /LOG 深挖
-4. 发布前必办：`tauri.conf.json` 的 updater endpoint 仍是 `YOUR_GH` 占位，
-   GitHub 仓库建立后必须替换，否则「检查更新」永远失败
-5. debug 后端（`jury-backend-debug.exe`）未随包分发，`bundle.resources`
+1. 【待用户】正面人像含闭眼样本 → EAR 阈值真数据校准
+2. NSIS /S 静默安装挂起（UI 模式正常）——待 NSIS /LOG 深挖
+3. debug 后端（`jury-backend-debug.exe`）未随包分发，`bundle.resources`
    只映射正式版；lib.rs 已做"debug 缺失回退正式版"，若要真正用 debug
    模式需补资源映射
-6. 模型下载入口与库的自动下载并存：insightface/pyiqa 在模型缺失时仍会
+4. 模型下载入口与库的自动下载并存：insightface/pyiqa 在模型缺失时仍会
    自行下载到同一目录，UI 的下载按钮走本仓库下载器（支持镜像/代理）。
-   两者不冲突但用户不可见；若要"必须用户确认才下载"需拦截库行为
-7. P1：胜出清单联动 LightCraft 调色（CSV 已有，缺导入自动化）；
+   已加 preflight 拦截（缺模型时明确报错），但库自身的自动下载仍在
+5. 自动更新的端到端验证：需用已发布的 0.1.0 客户端升级到下一个版本，
+   才能证明整条链可用。**0.1.0 本身无法自证**
+6. P1：胜出清单联动 LightCraft 调色（CSV 已有，缺导入自动化）；
    recall_stats 阈值自校准；千张并行（信号/评分多进程）
-8. P2：EXIF 相机水印；ArcFace 同人归组
+7. P2：EXIF 相机水印；ArcFace 同人归组
 
 没有其他已授权未完成事项；上述之外等待用户需求，不自行扩大范围。
 
