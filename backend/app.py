@@ -8,6 +8,7 @@ import logging
 import logging.handlers
 import os
 import shutil
+import sys
 import threading
 from pathlib import Path
 
@@ -17,17 +18,41 @@ import errors
 import paths
 import pipeline
 
-# 日志：始终落 <数据目录>/logs/backend.log（滚动 5×2MB）；
-# 控制台输出仅在 DEBUG 环境变量存在时开启（noconsole 打包无控制台）
+# 日志：始终落 <数据目录>/logs/backend.log（滚动 5×2MB）。
+# 正式版是 --windowed 打包（无控制台），所以绝不能只靠 stdout：
+# 用户遇到问题时唯一能拿到线索的就是这个文件。
 _DATA_DIR = paths.logs_dir()
 _fh = logging.handlers.RotatingFileHandler(_DATA_DIR / "backend.log",
                                            maxBytes=2 * 1024 * 1024, backupCount=5,
                                            encoding="utf-8")
 _fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-logging.basicConfig(level=logging.INFO, handlers=[_fh],
-                    format="%(asctime)s %(levelname)s %(message)s")
-if os.environ.get("JURYMATE_DEBUG"):
-    logging.basicConfig(level=logging.DEBUG)
+_handlers: list[logging.Handler] = [_fh]
+
+# 需要看详细日志时再挂控制台输出。
+# 注意 sys.stderr 在 --windowed 打包下是 None，必须先判空再访问属性。
+def _stderr_is_tty() -> bool:
+    try:
+        return bool(sys.stderr) and sys.stderr.isatty()
+    except Exception:
+        return False
+
+if os.environ.get("JURYMATE_DEBUG") or _stderr_is_tty():
+    try:
+        _ch = logging.StreamHandler()
+        _ch.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        _handlers.append(_ch)
+    except Exception:
+        pass
+
+# 注意：basicConfig 只在 root 没有 handler 时才生效，所以级别必须在这里一次定好。
+# 之前写成「先 basicConfig(INFO) 再 basicConfig(DEBUG)」，第二次是空操作，
+# 导致 JURYMATE_DEBUG 根本不起作用。
+logging.basicConfig(
+    level=logging.DEBUG if os.environ.get("JURYMATE_DEBUG") else logging.INFO,
+    handlers=_handlers,
+    format="%(asctime)s %(levelname)s %(message)s",
+    force=True,
+)
 log = logging.getLogger("jurymate")
 
 # 版本唯一来源是 src-tauri/tauri.conf.json。三条获取途径按可靠性排序：

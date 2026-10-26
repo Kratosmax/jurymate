@@ -70,15 +70,24 @@ jobs:
 
       # sidecar 必须是打包前就位的资源，否则 Tauri bundle 找不到。
       # build-backend/ 是构建产物目录（不入库），CI 里现建。
+      #
+      # 用 --windowed：正式版绝不能弹控制台黑窗。
+      # 代价是没有 stdout，所以后端日志一律写 <数据目录>/logs/backend.log，
+      # 用户反馈问题时让 TA 提供该文件即可。已实测该模式下
+      # sys.stderr 为 None，app.py 的日志初始化必须能容忍这一点。
+      # 不打包 debug 版（会多 457MB，安装包翻倍）；需要看后端输出的人
+      # 直接用源码跑 backend/app.py 就行。
       - name: Build sidecar
         shell: bash
         run: |
           mkdir -p build-backend dist-backend
           cd build-backend
           pyinstaller --name jury-backend --onefile ../backend/app.py \
-            --distpath ../dist-backend --workpath ./work --specpath . --noconfirm
+            --distpath ../dist-backend --workpath ./work --specpath . \
+            --noconfirm --clean --windowed
           cd ..
           ls -lh dist-backend/
+          test -f dist-backend/jury-backend.exe
 
       - name: Build Tauri bundles
         shell: bash
