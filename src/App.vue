@@ -15,14 +15,36 @@ const updTotal = ref(0)
 const updPct = computed(() =>
   updTotal.value ? Math.min(99, Math.round((updGot.value / updTotal.value) * 100)) : 0)
 
+// 更新器默认只认系统代理，不认应用内「网络设置」的代理——用户明明配了代理、
+// 模型能下，检查更新却失败。这里把同一份设置显式传给更新器。
+// 未配置时传 undefined，行为退回系统代理/直连，不改变原有默认。
+let cachedProxy: string | null | undefined
+async function updaterProxy(): Promise<string | undefined> {
+  if (cachedProxy !== undefined) return cachedProxy ?? undefined
+  try {
+    const net = await api.netSettingsGet()
+    // 后端出错时会返回 { ok:false, error }，此时不能把结果缓存成"无代理"——
+    // 否则一次早于 initBase 的失败会让代理永久失效。
+    if (!net || (net as any).ok === false || (net as any).error) {
+      return undefined
+    }
+    cachedProxy = net.http_proxy?.trim() || null
+  } catch {
+    return undefined   // 同样不缓存，下次重试
+  }
+  return cachedProxy ?? undefined
+}
+/** 网络设置变更后清掉缓存，让下次检查更新用新代理。 */
+function invalidateProxy() { cachedProxy = undefined }
+
 async function checkUpdate(silent: boolean) {
   try {
     if (!(window as any).__TAURI_INTERNALS__) return   // 浏览器模式无更新器
-    const u: Update | null = await check()
+    const u: Update | null = await check({ proxy: await updaterProxy() })
     if (u) updateInfo.value = { version: u.version, body: u.body ?? '' }
     else if (!silent) toast(`已是最新版本（v${APP_VERSION}）`)
   } catch {
-    if (!silent) toast('检查更新失败（清单未发布或网络不可达）')
+    if (!silent) toast('检查更新失败。若网络受限，请在「网络设置」填代理，或开启系统代理。')
   }
 }
 async function doUpdate() {
@@ -31,7 +53,9 @@ async function doUpdate() {
   updStage.value = '检查更新'
   updGot.value = 0; updTotal.value = 0
   try {
-    const u: Update | null = await check()
+    const proxy = await updaterProxy()
+    console.info('[jurymate] 更新器使用代理(下载):', proxy ?? '(系统代理/直连)')
+    const u: Update | null = await check({ proxy })
     if (!u) return
     updStage.value = '下载中'
     await u.downloadAndInstall((ev) => {
@@ -142,7 +166,8 @@ onMounted(() => {
   </nav>
   <div class="main">
     <div class="view-host">
-      <HomeView v-show="page === 'home'" :state="S" @go="go" @toast="toast" @refresh="refresh" />
+      <HomeView v-show="page === 'home'" :state="S" @go="go" @toast="toast" @refresh="refresh"
+                @netsaved="invalidateProxy" />
       <DecideView v-show="page === 'pk'" :state="S" @done="refresh" @toast="toast" />
       <WinnersView v-show="page === 'winners'" :state="S" @changed="refresh" @toast="toast" />
       <ReviewView v-show="page === 'review'" :state="S" @changed="refresh" @toast="toast" />

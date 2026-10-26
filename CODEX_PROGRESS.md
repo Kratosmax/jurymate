@@ -115,9 +115,7 @@ CPU 永远兜底。首选 EP 没装时自动降级（N 卡只装了 DML 包仍�
 3. 模型下载入口与库的自动下载并存：insightface/pyiqa 在模型缺失时仍会
    自行下载到同一目录，UI 的下载按钮走本仓库下载器（支持镜像/代理）。
    已加 preflight 拦截（缺模型时明确报错），但库自身的自动下载仍在
-4. 更新器只走系统代理，不读应用内「网络设置」的代理。若要让两者统一，
-   需在 Rust 侧用 `UpdaterBuilder::proxy()` 或 `on_before_request` 注入；
-   0.1.2 起已在 README 说明该边界
+4. 更新器代理接入：**实现已完成但未提交未验证**，见 §9 交接
 5. 0.1.2 之后的版本才能真正自动更新。**0.1.0/0.1.1 → 0.1.2 必须手动装一次**，
    这是已发布版本的历史遗留，无法通过服务端修复
 6. P1：胜出清单联动 LightCraft 调色（CSV 已有，缺导入自动化）；
@@ -192,3 +190,73 @@ CPU 永远兜底。首选 EP 没装时自动降级（N 卡只装了 DML 包仍�
 - 测试记录必须含命令与结果；没运行就写未运行
 - 架构、入口、安全边界、验证命令变化时同步更新对应章节
 - 与 Git/源码/用户指示冲突时，以更新的可验证证据为准并修正本文件
+
+## 9. 会话交接（2026-10-26 18:xx）
+
+### 当前状态
+
+- **线上最新版本：v0.1.2**（已发布并核验通过）
+- **master 最新提交：`d85eeab`**
+- **工作区有未提交改动**：`src/App.vue`、`src/views/HomeView.vue`
+  （更新器代理接入，实现完整、`npm run build` 通过，但**未打包、未验证、未提交**）
+
+### 未提交改动的意图（待办 #4）
+
+**问题**：Tauri 更新器只读系统代理（`reqwest` 的 `system-proxy` feature），
+不读应用内「网络设置」的 `http_proxy`。国内用户会出现"模型能下载、检查更新却失败"。
+
+**已完成的改动**：
+
+| 文件 | 改动 |
+|---|---|
+| `src/App.vue` | 新增 `updaterProxy()` 读取 `api.netSettingsGet().http_proxy`；`check()` 改为 `check({ proxy })`；`invalidateProxy()` 供设置变更后清缓存；失败提示改为引导用户配代理 |
+| `src/views/HomeView.vue` | `saveNet()` 成功后 `emit('netsaved')`；`defineEmits` 增加 `netsaved` |
+| `src/App.vue` 模板 | `HomeView` 绑定 `@netsaved="invalidateProxy"` |
+
+**关键依据**：`node_modules/@tauri-apps/plugin-updater/dist-js/index.d.ts`
+的 `CheckOptions.proxy?: string` —— 前端 API 原生支持，**不需要改 Rust**。
+未配置代理时传 `undefined`，行为退回系统代理/直连，不改变原有默认。
+
+### 下一步该做什么（按顺序）
+
+1. `npm run build` 已通过；**接着重建 sidecar 并打包**验证界面无报错：
+   ```powershell
+   # 注意：本地打包不会自动重建 sidecar，必须手动跑，否则会得到
+   # "新前端 + 旧后端" 的混合体（0.1.1 开发时踩过，见 §7 教训）
+   $py = "F:\git\cullmate\.venv\Scripts\python.exe"
+   Push-Location build-backend
+   & $py -m PyInstaller --name jury-backend --onefile ../backend/app.py `
+       --distpath ../dist-backend --workpath ./work --specpath . --noconfirm
+   Pop-Location
+   $env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content .keys\jurymate.key -Raw).Trim()
+   $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
+   npm run tauri build
+   ```
+2. **真机验证代理生效**：在应用「网络设置」填 `http://127.0.0.1:10808`，
+   保持系统代理关闭，点「检查更新」应能读到清单（这是本次改动的验证点）。
+   本机代理在 `127.0.0.1:10808`。
+3. 版本升到 0.1.3（四处：`tauri.conf.json` / `package.json` / `Cargo.toml` /
+   `Cargo.lock`），更新 `RELEASE_NOTES_CURRENT.md`（**只写当前版本**），
+   提交 → 推 master → 打标签 → 等 CI → 核验线上资产。
+4. 剩余待办 #2、#3、#6、#7 见上。
+
+### 本次会话已完成的事（避免重复劳动）
+
+| 版本 | 主要内容 |
+|---|---|
+| v0.1.0 | 首个公开发布；发布物料、CI 工作流、签名链路 |
+| v0.1.1 | 更新进度显示、版本号常驻、前后端版本一致性检查、首页崩溃修复 |
+| v0.1.2 | **修复 sidecar 文件锁导致自动更新失败**（关键缺陷） |
+
+### 踩过的坑（务必先读）
+
+1. **本地 `npm run tauri build` 不会重建 sidecar**，会复用 `dist-backend/` 里的旧 exe，
+   得到"新前端 + 旧后端"，表现为接口字段缺失、前端报错。打包前必须手动重建。
+2. **更新器走系统代理**，不读应用内设置。验证更新链路时要么开系统代理，
+   要么等 #4 的改动发版。本机系统代理用 `HKCU:\...\Internet Settings\ProxyEnable`。
+3. **用本地旧构建测自动更新会误判**：本地构建的 exe 里 endpoint 可能还是
+   `YOUR_GH`。必须用 GitHub Releases 上的正式包做升级测试。
+4. **git 历史不能带大文件**：`dist-backend/`、`build-backend/`、`temp/` 已在
+   .gitignore，历史曾因 457MB exe 膨胀到 2.9GB 被 `filter-branch` 清理过。
+5. **PowerShell 控制台显示中文会乱码**，但文件本身正常。判断文件内容用
+   `read` 工具或 `[IO.File]::ReadAllText(..., UTF8)`，别信控制台输出。

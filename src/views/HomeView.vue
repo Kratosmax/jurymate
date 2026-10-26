@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { api, type State } from '../api'
 
 const props = defineProps<{ state: State | null }>()
-const emit = defineEmits<{ go: [p: 'pk' | 'winners' | 'review']; toast: [m: string]; refresh: [] }>()
+const emit = defineEmits<{ go: [p: 'pk' | 'winners' | 'review']; toast: [m: string]; refresh: []; netsaved: [] }>()
 
 const folder = ref('')
 const scanning = ref(false)
@@ -107,7 +107,11 @@ async function saveNet() {
     netMirrors.value.filter(s => s.trim()),
     netProxy.value.trim(),
   )
-  if (r.ok) { emit('toast', '网络设置已保存'); checkSys() }
+  if (r.ok) {
+    emit('toast', '网络设置已保存')
+    emit('netsaved')   // 让上层刷新更新器的代理缓存
+    checkSys()
+  }
 }
 async function dlModel(id: string) {
   dlRunning.value = true; dlId.value = id; dlDone.value = 0; dlTotal.value = 1
