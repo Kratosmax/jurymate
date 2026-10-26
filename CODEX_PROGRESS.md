@@ -78,7 +78,12 @@ CPU 永远兜底。首选 EP 没装时自动降级（N 卡只装了 DML 包仍�
 - 分支：master；remote：`origin` → https://github.com/Kratosmax/jurymate
 - 仓库：**PUBLIC**，23 个提交，标签 `v0.1.0`
 - 当前工作：0.1.0 发布物料完成；打包版实机验证通过
-- 线上状态：见 §6 发布核验
+- 线上状态：**已发布** https://github.com/Kratosmax/jurymate/releases/tag/v0.1.0
+  - CI run 40280616911 success；7 个资产齐全（Setup/ZIP/MSI + 2×sig +
+    latest.json + SHA256SUMS.txt）
+  - latest.json: version=0.1.0，载体为 NSIS setup.exe，签名 key id
+    fad7706de1435f20 与 tauri.conf.json 公钥一致（已核验）
+  - eleases/latest 实际指向 v0.1.0；setup.exe HTTP 200 / 456.7MB
 - **待用户**：提供 2-3 张正面人像含闭眼样本（闭眼阈值真数据校准）
 
 ### 发布方式
