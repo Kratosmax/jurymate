@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
-"""闭眼检测正例回归：用网络样图验证 MediaPipe EAR 管线。
+"""闭眼检测正例回归：用样图验证 MediaPipe EAR 管线。
 
-样图（Pexels 免费许可，F:/git/temp/cullmate-eye-test/）：
+样图目录（Pexels 免费许可）默认取环境变量 JURYMATE_EYE_DIR，
+未设置时用 temp/jurymate-eye-test；也可命令行传入：
   closed_1 侧脸闭眼 / closed_2 近正面闭眼特写 / closed_4 正面闭眼 → closed=True
   open_1 正面睁眼 → closed=False
   closed_3 远景侧身小脸 → 无脸豁免（不算失败）
@@ -18,7 +19,10 @@ import numpy as np  # noqa: E402
 import pipeline  # noqa: E402
 import faces  # noqa: E402
 
-DIR = sys.argv[1] if len(sys.argv) > 1 else r"F:/git/temp/cullmate-eye-test"
+_HERE = os.path.dirname(os.path.abspath(__file__))
+DIR = (sys.argv[1] if len(sys.argv) > 1
+       else os.environ.get("JURYMATE_EYE_DIR")
+       or os.path.join(os.path.dirname(_HERE), "temp", "jurymate-eye-test"))
 EXPECT = {"closed": True, "open": False}
 
 def main():

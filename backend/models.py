@@ -5,30 +5,29 @@
   用户配置的镜像前缀，全部失败回落直连
 - **HTTP 代理**：对任意域生效（含 Google storage 的 FaceLandmarker）
 - 直连兜底：未配置任何代理/镜像时直接尝试
-网络设置持久化到 ~/.cache/cullmate/net_settings.json。
+网络设置持久化到 <数据目录>/net_settings.json（见 paths.py）。
 
 三条模型的获取方式各不同（都已被管线隐式依赖）：
-- face_landmarker.task：闭眼检测（MediaPipe Tasks）——**需手动下载**（本模块）
-- buffalo_l：insightface 人脸检测/识别——首次运行管线时 insightface 自动下载
-- musiq 权重：pyiqa 美学评分——首次评分时 pyiqa 自动下载（HF）
+- face_landmarker.task：闭眼检测（MediaPipe Tasks）——本模块下载
+- buffalo_l：insightface 人脸检测/识别——本模块下载；未下载时 insightface
+  首次调用也会自行下载到同一目录（两条路径落到同一处）
+- musiq 权重：pyiqa 美学评分——本模块下载；未下载时 pyiqa 首次评分自行下载
 发布红线：buffalo_l 权重为 insightface 非商业许可，**不随安装包分发**，
-由用户按需下载（本模块即该下载入口的雏形）。
+由用户按需下载（本模块即该下载入口）。
 """
 import json
 import logging
 import threading
-import time
 import urllib.request
 from pathlib import Path
 
-log = logging.getLogger("cullmate.models")
+import paths
+
+log = logging.getLogger("jurymate.models")
 
 DL = {"running": False, "done": 0, "total": 1, "id": "", "error": None}
 
-def _home_cache() -> Path:
-    return Path.home() / ".cache" / "cullmate"
-
-NET_SETTINGS_PATH = _home_cache() / "net_settings.json"
+NET_SETTINGS_PATH = paths.data_dir() / "net_settings.json"
 
 # 国内常见 GitHub 加速镜像（默认表；用户可在设置里增删/调序）
 DEFAULT_GITHUB_MIRRORS = [
@@ -77,7 +76,7 @@ MODELS = [
         "id": "face_landmarker",
         "name": "FaceLandmarker（闭眼检测）",
         "size_mb": 3.7,
-        "path": _home_cache() / "face_landmarker.task",
+        "path": paths.data_dir() / "face_landmarker.task",
         "url": ("https://storage.googleapis.com/mediapipe-models/face_landmarker/"
                 "face_landmarker/float16/1/face_landmarker.task"),
         "mode": "manual",
@@ -87,7 +86,8 @@ MODELS = [
         "id": "buffalo_l",
         "name": "人脸检测 / 识别（insightface）",
         "size_mb": 330,
-        "path": Path.home() / ".cache" / "pic_selecter" / "insightface" / "models" / "buffalo_l",
+        # 与 faces._model_root() 同一处：<数据目录>/insightface/models/buffalo_l
+        "path": paths.data_dir() / "insightface" / "models" / "buffalo_l",
         "url": "https://github.com/deepinsight/insightface/releases/download/models/buffalo_l.zip",
         "mode": "manual",
         # 产物是 zip：必须解压成目录，insightface 的 storage.download 也是这么做的
@@ -97,9 +97,9 @@ MODELS = [
         "id": "musiq",
         "name": "MUSIQ 审美评分权重",
         "size_mb": 104,
-        # pyiqa 的查找路径是 torch.hub.get_dir()/pyiqa/<url 里的文件名>，
-        # 不是目录本身——这里必须给到 .pth 文件（见 pyiqa/utils/download_util.py）
-        "path": Path.home() / ".cache" / "torch" / "hub" / "pyiqa"
+        # pyiqa 按 torch.hub.get_dir()/pyiqa/<url 文件名> 查找；paths.py 已把
+        # TORCH_HOME 钉到数据目录，故这里是 <数据目录>/torch/hub/pyiqa/<文件>
+        "path": paths.torch_dir() / "hub" / "pyiqa"
                 / "musiq_koniq_ckpt-e95806b9.pth",
         "url": ("https://hf-mirror.com/chaofengc/IQA-PyTorch-Weights/resolve/main/"
                 "musiq_koniq_ckpt-e95806b9.pth"),

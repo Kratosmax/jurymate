@@ -1,10 +1,15 @@
 # -*- coding: utf-8 -*-
-"""cullmate 自包含端到端测试：不依赖任何会话，可重复执行。
+"""JuryMate 自包含端到端测试：不依赖任何会话，可重复执行。
 
-步骤：起服务 → start 扫描 tmp → 轮询 → 校验 state → PK/recall/undo 冒烟 → 落盘结论。
+步骤：起服务 → start 扫描样图目录 → 轮询 → 校验 state → PK/recall/undo 冒烟 → 落盘结论。
 结论追加写 selftest.log（PASS/FAIL 逐项 + state 摘要）。
+
+样图目录：环境变量 JURYMATE_TEST_DIR，默认 <工作区>/temp/jurymate-test
+（需含 9 张 ARW；DSC01928/01929 是背影人像回归样本）。
+解释器：环境变量 JURYMATE_PY，其次本仓库 .venv，最后当前解释器。
 """
 import json
+import os
 import subprocess
 import sys
 import time
@@ -13,12 +18,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 LOG = ROOT / "selftest.log"
-TMP = r"C:/Users/11726/Pictures/tmp"
-PORT = 5091  # jurymate 与 cullmate 的 selftest 共用 5091，错峰运行
+TMP = os.environ.get("JURYMATE_TEST_DIR") or str(
+    ROOT.parent / "temp" / "jurymate-test")
+PORT = int(os.environ.get("JURYMATE_TEST_PORT") or 5091)  # 避开 5090 主服务
 BASE = f"http://127.0.0.1:{PORT}"
-import os
-# 解释器：优先环境变量（跨仓库复用 cullmate 的 venv），其次本仓库 .venv
-PY = os.environ.get("CULLMATE_PY") or str(ROOT / ".venv" / "Scripts" / "python.exe")
+# 解释器：环境变量优先（可指向任意装好依赖的 venv），其次本仓库 .venv
+PY = os.environ.get("JURYMATE_PY") or str(ROOT / ".venv" / "Scripts" / "python.exe")
 if not Path(PY).exists():
     PY = sys.executable
 
@@ -44,10 +49,10 @@ def main():
         import onnxruntime, cv2, insightface, pyiqa, pkg_resources  # noqa
         check("依赖导入", True, f"providers={onnxruntime.get_available_providers()}")
     except Exception as e:
-        check("依赖导入", False, f"{e} —— 按 HANDOFF.md 修包冲突后重跑")
+        check("依赖导入", False, f"{e} —— 按 CODEX_PROGRESS.md 的验证矩阵修依赖后重跑")
 
     # 1) 清理旧状态，起服务
-    state_json = Path(TMP) / ".cullmate" / "state.json"
+    state_json = Path(TMP) / ".jurymate" / "state.json"
     if state_json.exists():
         state_json.unlink()
     log_lines = []

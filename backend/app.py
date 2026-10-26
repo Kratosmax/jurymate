@@ -1,6 +1,6 @@
-"""cullmate 服务：Flask API + 状态持久化。
+"""JuryMate 服务：Flask API + 状态持久化。
 
-状态保存在照片目录的 .cullmate/state.json（pianke 同款单文件夹单会话策略），
+状态保存在照片目录的 .jurymate/state.json（单文件夹单会话策略），
 随时关闭、下次启动同目录自动恢复。
 """
 import json
@@ -13,12 +13,12 @@ from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory
 
+import paths
 import pipeline
 
-# 日志：始终落 %LOCALAPPDATA%/JuryMate/logs/backend.log（滚动 5×2MB）；
+# 日志：始终落 <数据目录>/logs/backend.log（滚动 5×2MB）；
 # 控制台输出仅在 DEBUG 环境变量存在时开启（noconsole 打包无控制台）
-_DATA_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "JuryMate" / "logs"
-_DATA_DIR.mkdir(parents=True, exist_ok=True)
+_DATA_DIR = paths.logs_dir()
 _fh = logging.handlers.RotatingFileHandler(_DATA_DIR / "backend.log",
                                            maxBytes=2 * 1024 * 1024, backupCount=5,
                                            encoding="utf-8")
@@ -27,11 +27,11 @@ logging.basicConfig(level=logging.INFO, handlers=[_fh],
                     format="%(asctime)s %(levelname)s %(message)s")
 if os.environ.get("JURYMATE_DEBUG"):
     logging.basicConfig(level=logging.DEBUG)
-log = logging.getLogger("cullmate")
+log = logging.getLogger("jurymate")
 
 # 前端静态目录仅源码模式存在（浏览器访问）；PyInstaller 打包模式下
 # 前端由 Tauri webview 提供，Flask 只承担 API。
-# 前端产物在 dist/（vite build 输出），不是 cullmate 的 frontend/。
+# 前端产物在 dist/（vite build 输出），不是 frontend/。
 _FRONTEND = Path(__file__).resolve().parent.parent / "dist"
 if not (_FRONTEND / "index.html").exists():
     _FRONTEND = None
@@ -75,7 +75,7 @@ DEFAULT_SETTINGS = {
 def state_file() -> Path | None:
     if not STATE["folder"]:
         return None
-    d = Path(STATE["folder"]) / ".cullmate"
+    d = Path(STATE["folder"]) / paths.STATE_DIRNAME
     d.mkdir(exist_ok=True)
     return d / "state.json"
 
@@ -89,7 +89,7 @@ def save_state():
         f.write_text(json.dumps(slim, ensure_ascii=False), encoding="utf-8")
 
 def load_state(folder: str) -> bool:
-    f = Path(folder) / ".cullmate" / "state.json"
+    f = Path(folder) / paths.STATE_DIRNAME / "state.json"
     if f.exists():
         try:
             data = json.loads(f.read_text(encoding="utf-8"))
@@ -171,7 +171,7 @@ def start():
                     with _SNAPSHOT_LOCK:
                         n_new = pipeline.add_new_photos(
                             folder, STATE["photos"], STATE["groups"],
-                            Path(folder) / ".cullmate", STATE["settings"], progress)
+                            Path(folder) / paths.STATE_DIRNAME, STATE["settings"], progress)
                     TASK.update(done=len(STATE["photos"]), total=len(STATE["photos"]),
                                 stage=f"增量完成：新增 {n_new} 张")
                     save_state()
@@ -184,7 +184,7 @@ def start():
             # 全量扫描
             with _SNAPSHOT_LOCK:
                 STATE.update(photos=[], groups=[])
-            result = pipeline.run(folder, Path(folder) / ".cullmate",
+            result = pipeline.run(folder, Path(folder) / paths.STATE_DIRNAME,
                                   STATE["settings"], progress)
             with _SNAPSHOT_LOCK:
                 STATE.update(photos=result["photos"], groups=result["groups"])
@@ -469,7 +469,7 @@ def open_folder():
 @app.route("/thumbs/<path:p>")
 def thumbs(p):
     folder = Path(STATE["folder"]) if STATE["folder"] else Path(".")
-    return send_from_directory(folder / ".cullmate" / "thumbs", p)
+    return send_from_directory(folder / paths.STATE_DIRNAME / "thumbs", p)
 
 if __name__ == "__main__":
     import argparse

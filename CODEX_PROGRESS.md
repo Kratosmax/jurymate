@@ -13,8 +13,28 @@ python selftest.py            # 全量回归 18 项（端口 5091，勿与 5090 
 python verify_eyes.py         # 闭眼正例回归（需样图目录与模型缓存）
 ```
 
-Python 解释器：项目无独立 venv，复用姊妹仓库 `../cullmate/.venv/Scripts/python.exe`
-（该 venv 含全部依赖；跨仓库复用是有意设计）。
+解释器：`JURYMATE_PY` 环境变量 → 本仓库 `.venv` → 当前解释器。
+样图目录：`JURYMATE_TEST_DIR`（selftest，需 9 张 ARW）、
+`JURYMATE_EYE_DIR`（verify_eyes）；未设时取 `<工作区>/temp/jurymate-*`。
+
+## 1.1 数据目录（唯一根）
+
+所有运行时产物都在 **`%LOCALAPPDATA%/JuryMate/`**，由 `backend/paths.py` 统一派生：
+
+| 子路径 | 内容 |
+|---|---|
+| `logs/backend.log` | 滚动日志（5×2MB） |
+| `net_settings.json` | GitHub 镜像前缀 / HTTP 代理 |
+| `face_landmarker.task` | 闭眼检测模型（3.7MB） |
+| `insightface/models/buffalo_l/` | 人脸检测/识别（340MB，非商业许可，按需下载） |
+| `torch/hub/pyiqa/` | MUSIQ 权重（104MB） |
+| `settings.json` | Rust 侧 debug 开关（`app_config_dir`） |
+
+`paths.py` 导入时强制设 `TORCH_HOME=<数据目录>/torch`，因此 pyiqa 的权重位置
+由它决定——**任何模块都必须先 `import paths` 再 import pyiqa/torch**。
+
+照片目录下的会话状态在 **`.jurymate/`**（state.json / thumbs / recall_stats.json），
+用户删掉它 = 重置该目录进度。
 
 ## 2. 当前快照（最后核验 2026-10-26）
 
@@ -33,12 +53,14 @@ Python 解释器：项目无独立 venv，复用姊妹仓库 `../cullmate/.venv/
 1. 【待用户】重装最新安装包复测 CORS 修复（安装包见 bundle/nsis/）
 2. 【待用户】正面人像含闭眼样本 → EAR 阈值真数据校准
 3. NSIS /S 静默安装挂起（UI 模式正常）——待 NSIS /LOG 深挖
-4. 启动脚本更名（现名 `启动_cullmate.bat` 为历史遗留）+ venv 引导说明
-5. 发布前必办：`tauri.conf.json` 的 updater endpoint 仍是 `YOUR_GH` 占位，
+4. 发布前必办：`tauri.conf.json` 的 updater endpoint 仍是 `YOUR_GH` 占位，
    GitHub 仓库建立后必须替换，否则「检查更新」永远失败
-6. debug 后端（`jury-backend-debug.exe`）未随包分发，`bundle.resources`
+5. debug 后端（`jury-backend-debug.exe`）未随包分发，`bundle.resources`
    只映射正式版；lib.rs 已做"debug 缺失回退正式版"，若要真正用 debug
    模式需补资源映射
+6. 模型下载入口与库的自动下载并存：insightface/pyiqa 在模型缺失时仍会
+   自行下载到同一目录，UI 的下载按钮走本仓库下载器（支持镜像/代理）。
+   两者不冲突但用户不可见；若要"必须用户确认才下载"需拦截库行为
 7. P1：胜出清单联动 LightCraft 调色（CSV 已有，缺导入自动化）；
    recall_stats 阈值自校准；千张并行（信号/评分多进程）
 8. P2：EXIF 相机水印；ArcFace 同人归组
@@ -56,11 +78,12 @@ Python 解释器：项目无独立 venv，复用姊妹仓库 `../cullmate/.venv/
 | 连拍分组（burst + phash） | `backend/group.py` |
 | 锐度/曝光信号与阈值 | `backend/signals.py` |
 | 模型清单/硬件检测/双通道下载 | `backend/models.py` |
+| 数据目录唯一根（含 TORCH_HOME 钉定） | `backend/paths.py` |
 | 前端四页（总览/决策/胜出/复查） | `src/views/*.vue` + `src/App.vue` |
 | API 客户端（全站唯一 fetch 出口） | `src/api.ts` |
 | Rust 壳（sidecar 生命周期 + updater） | `src-tauri/src/lib.rs` |
 | 回归测试 | `selftest.py`（18 项）、`verify_eyes.py`（闭眼 4 正例） |
-| 风格模板（四家族 + 已确认预设） | `styles/`——**不在本仓库**，属 cullmate 侧资产，路径待核 |
+| 风格模板（四家族 + 已确认预设） | `styles/`——**不在本仓库**，路径待核 |
 
 ## 5. 不得破坏的约束
 
@@ -96,7 +119,8 @@ Python 解释器：项目无独立 venv，复用姊妹仓库 `../cullmate/.venv/
   **用户必须看到原图级画质**，JPEG 4:4:4）→ LightCraft 精修（单变量 before/after）
 - 目录边界：仓库与开发产物在工作目录；临时产物在 temp；
   最终版交付物放用户指定位置；**用户安装目录与用户数据目录不可写入**
-- 后端解释器复用姊妹仓库 `../cullmate/.venv`（跨仓库依赖是有意设计）
+- 依赖解释器可用 `JURYMATE_PY` 指定；本机开发环境为姊妹仓库 cullmate 的 venv
+  （该 venv 装好了全部依赖，仅为开发便利，不是运行时依赖）
 - 模型下载双通道：GitHub 镜像前缀列表（降级重试）+ HTTP 代理 + 直连兜底
 - 「压缩版 agent 自查 / 高清版用户评审」双版本交付铁律
 - GUI 验证用 browser-use 黑盒测试（视觉证据 + DOM 双确认）

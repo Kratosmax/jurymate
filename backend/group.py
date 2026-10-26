@@ -11,7 +11,7 @@ from pathlib import Path
 
 import imagehash
 
-log = logging.getLogger("cullmate")
+log = logging.getLogger("jurymate")
 
 def _mtime(path: str) -> float:
     return Path(path).stat().st_mtime

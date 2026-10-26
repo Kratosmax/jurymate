@@ -8,37 +8,37 @@
   MediaPipe 闭眼 0.05-0.14 / 睁眼 0.39，判别间隔清晰。
 - 两源合并：FaceMesh 能检出 insightface 漏掉的脸（如闭眼特写），按中心点
   最近匹配挂 EAR；insightface 没有的脸补录（bbox 从 landmarks 推）。
-- 模型缓存：~/.cache/cullmate/face_landmarker.task（3.7MB，Google storage）。
+- 模型缓存：<数据目录>/insightface/（buffalo_l）与 <数据目录>/face_landmarker.task，
+  数据目录见 paths.py（Windows 为 %LOCALAPPDATA%/JuryMate）。
 """
 import logging
-from functools import lru_cache
-from pathlib import Path
 
 import cv2
 import numpy as np
+
+import paths
 
 try:
     import mediapipe as _mp
 except ImportError:            # mediapipe 可选（缺失时仅闭眼检测降级）
     _mp = None
 
-log = logging.getLogger("cullmate")
+log = logging.getLogger("jurymate")
 
 _EAR_CLOSED = 0.18   # EAR 低于此判闭眼（MediaPipe 量纲；闭眼实测 0.05-0.14，睁眼 0.39）
 _EAR_OPEN = 0.25     # 两者之间算"半闭"，不确定不淘汰
 _L_EAR = [33, 160, 158, 133, 153, 144]
 _R_EAR = [362, 385, 387, 263, 373, 380]
-_MP_MODEL = Path.home() / ".cache" / "cullmate" / "face_landmarker.task"
 
 _FACES = None
 _MESH = None
 
 def _model_root() -> str:
-    # 复用 pianke 的缓存；没有就落到 insightface 默认位置（首次会下载）
-    reuse = Path.home() / ".cache" / "pic_selecter" / "insightface"
-    if (reuse / "models" / "buffalo_l").exists():
-        return str(reuse)
-    return str(Path.home() / ".insightface")
+    """insightface 模型根：统一放 JuryMate 自己的数据目录。
+
+    布局为 <root>/models/buffalo_l/（insightface 的约定），缺失时
+    FaceAnalysis 会自行下载解压到该处。"""
+    return str(paths.ensure("insightface"))
 
 def _providers() -> list[str]:
     import onnxruntime as ort
@@ -67,13 +67,14 @@ def _get_mesh():
     global _MESH
     if _MESH is not None:
         return _MESH
-    if not _MP_MODEL.exists():
-        log.warning("faces: FaceLandmarker 模型缺失（%s），闭眼检测降级为不可用", _MP_MODEL)
+    mp_model = paths.data_dir() / "face_landmarker.task"
+    if not mp_model.exists():
+        log.warning("faces: FaceLandmarker 模型缺失（%s），闭眼检测降级为不可用", mp_model)
         return None
     import mediapipe as mp
     from mediapipe.tasks import python as mp_python
     from mediapipe.tasks.python import vision
-    base = mp.tasks.BaseOptions(model_asset_path=str(_MP_MODEL))
+    base = mp.tasks.BaseOptions(model_asset_path=str(mp_model))
     opts = vision.FaceLandmarkerOptions(
         base_options=base, running_mode=vision.RunningMode.IMAGE,
         num_faces=12, min_face_detection_confidence=0.3)

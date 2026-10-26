@@ -1,12 +1,15 @@
 """审美分：MUSIQ（无参考图像质量评估，Google 0-100 分制）映射 5 分制。
 
-- 用 pyiqa 加载，权重复用 ~/.cache/torch（pianke 首跑已缓存 musiq_koniq）。
+- 用 pyiqa 加载，权重缓存由 paths.py 钉到 <数据目录>/torch/hub/pyiqa，
+  首次评分时由 pyiqa 自动下载（约 104MB）。
 - CPU 推理单张几十 ms，百张分钟级，不构成瓶颈；V1 不上 GPU。
 - MUSIQ 是"人类平均审美"的代理分——给的是参考分，最终决策在人。
 """
 import logging
 
-log = logging.getLogger("cullmate")
+import paths  # noqa: F401  导入即设 TORCH_HOME，必须早于 pyiqa/torch
+
+log = logging.getLogger("jurymate")
 
 _predictor = None
 

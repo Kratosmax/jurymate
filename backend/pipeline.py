@@ -27,7 +27,7 @@ import faces as faces_mod
 import aesthetic
 import group as group_mod
 
-log = logging.getLogger("cullmate")
+log = logging.getLogger("jurymate")
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp", ".heic", ".heif"}
 RAW_EXTS = {".arw", ".cr2", ".cr3", ".nef", ".raf", ".orf", ".rw2", ".dng", ".erf"}
