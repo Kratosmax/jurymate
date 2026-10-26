@@ -1,8 +1,8 @@
 [package]
 name = "jurymate"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "JuryMate — AI 选片搭档：AI 陪审，你是法官"
+authors = ["Kratosmax"]
 edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

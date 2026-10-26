@@ -50,7 +50,7 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/YOUR_GH/jurymate/releases/latest/download/latest.json"
+        "https://github.com/Kratosmax/jurymate/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDIwNUY0M0UxNkQ3MEQ3RkEKUldUNjEzQnQ0VU5mSURMcW40TjVreEVCaEJLSHp6QjRvRWlsNW5qQUhaajVrZ1hsY0hTQ2Y1SjcK"
     }

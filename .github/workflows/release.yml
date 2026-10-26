@@ -1,0 +1,184 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # 版本唯一来源：src-tauri/tauri.conf.json。标签必须与之完全一致。
+      - name: Verify tag matches version
+        shell: bash
+        run: |
+          CONF_VER=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          PKG_VER=$(node -p "require('./package.json').version")
+          CARGO_VER=$(grep -m1 '^version' src-tauri/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          TAG_VER="${GITHUB_REF_NAME#v}"
+          echo "conf=$CONF_VER pkg=$PKG_VER cargo=$CARGO_VER tag=$TAG_VER"
+          for v in "$PKG_VER" "$CARGO_VER" "$TAG_VER"; do
+            if [ "$v" != "$CONF_VER" ]; then
+              echo "::error::版本不一致：tauri.conf.json=$CONF_VER 但 $v 不匹配"
+              exit 1
+            fi
+          done
+
+      - name: Install frontend deps
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Install backend deps
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          # insightface 会拉 CPU 版 onnxruntime，装完再换 DirectML 版
+          pip install -r requirements.txt
+          pip install --force-reinstall onnxruntime-directml
+          pip install pyinstaller
+
+      # sidecar 必须是打包前就位的资源，否则 Tauri bundle 找不到
+      - name: Build sidecar
+        shell: bash
+        run: |
+          cd build-backend
+          pyinstaller --name jury-backend --onefile ../backend/app.py --noconfirm
+          ls -lh ../dist-backend/
+
+      - name: Build Tauri bundles
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run tauri build
+
+      - name: Collect artifacts
+        shell: bash
+        run: |
+          mkdir -p out
+          cp src-tauri/target/release/bundle/nsis/*-setup.exe out/ 2>/dev/null || true
+          cp src-tauri/target/release/bundle/msi/*.msi out/ 2>/dev/null || true
+          ls -lh out/
+
+      # 便携版：exe + 随包 sidecar + 前端产物，解压即用
+      - name: Build portable zip
+        shell: pwsh
+        run: |
+          $ver = node -p "require('./src-tauri/tauri.conf.json').version"
+          $stage = "stage/JuryMate-$ver"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item "src-tauri/target/release/jurymate.exe" "$stage/JuryMate.exe"
+          Copy-Item "dist-backend" "$stage/dist-backend" -Recurse
+          Copy-Item "README.md","LICENSE","RELEASE_NOTES_CURRENT.md" $stage
+          Compress-Archive -Path $stage -DestinationPath "out/JuryMate_${ver}_x64.zip" -Force
+          Get-ChildItem out | Format-Table Name, Length
+
+      - name: Generate SHA256SUMS
+        shell: pwsh
+        run: |
+          $lines = Get-ChildItem out -File |
+            Where-Object { $_.Extension -in '.exe','.msi','.zip' } |
+            ForEach-Object {
+              $h = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+              "$h  $($_.Name)"
+            }
+          $lines | Set-Content out/SHA256SUMS.txt -Encoding ascii
+          Get-Content out/SHA256SUMS.txt
+
+      # Tauri updater 需要 latest.json。只有 Tauri 自己产出的安装包才有 .sig，
+      # 手工压的便携 ZIP 无签名，绝不能写进清单（客户端会验签失败）。
+      - name: Generate updater manifest
+        shell: bash
+        env:
+          VER: ${{ github.ref_name }}
+        run: |
+          VER="${VER#v}"
+          export VER
+          node -e '
+            const fs=require("fs"),crypto=require("crypto"),path=require("path");
+            const out="out", ver=process.env.VER;
+            const files=fs.readdirSync(out);
+            const platforms={};
+            // NSIS 安装包作为自动更新载体（Windows 目标键固定）
+            const setup=files.find(f=>/-setup\.exe$/i.test(f));
+            if(!setup){
+              console.error("未找到 NSIS 安装包，无法生成 latest.json");
+              process.exit(1);
+            }
+            const sigPath=path.join(out,setup+".sig");
+            if(!fs.existsSync(sigPath)){
+              console.error("安装包缺少 .sig 签名，拒绝生成未签名清单");
+              process.exit(1);
+            }
+            const sha=crypto.createHash("sha256")
+              .update(fs.readFileSync(path.join(out,setup))).digest("hex");
+            platforms["windows-x86_64"]={
+              signature: fs.readFileSync(sigPath,"utf8").trim(),
+              url: "https://github.com/"+process.env.GITHUB_REPOSITORY
+                   +"/releases/download/v"+ver+"/"+setup
+            };
+            const manifest={
+              version: ver,
+              notes: fs.readFileSync("RELEASE_NOTES_CURRENT.md","utf8"),
+              pub_date: new Date().toISOString(),
+              platforms
+            };
+            fs.writeFileSync(path.join(out,"latest.json"), JSON.stringify(manifest,null,2));
+            console.log("updater 载体:", setup);
+            console.log("sha256:", sha);
+          '
+          cat out/latest.json
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: JuryMate ${{ github.ref_name }}
+          body_path: RELEASE_NOTES_CURRENT.md
+          draft: false
+          prerelease: false
+          files: |
+            out/*.exe
+            out/*.msi
+            out/*.zip
+            out/*.sig
+            out/latest.json
+            out/SHA256SUMS.txt
+
+      - name: Verify release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" --json assets \
+            --jq '.assets[] | "\(.name)\t\(.size)"'

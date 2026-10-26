@@ -13,11 +13,25 @@ const stage = ref('')
 let timer: ReturnType<typeof setInterval> | undefined
 const t0 = ref(0)
 
-const recent = ref<string[]>(JSON.parse(localStorage.getItem('jurymate_dirs') ?? '[]'))
+// localStorage 可能被写坏（进程在写入中被杀）或存了非数组值。
+// 这行在 setup 顶层同步执行，一旦抛错整个组件不会渲染（表现为首页白屏、
+// 侧栏仍在），所以必须兜住。
+function loadRecent(): string[] {
+  try {
+    const raw = localStorage.getItem('jurymate_dirs')
+    const v = raw ? JSON.parse(raw) : []
+    return Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []
+  } catch {
+    return []
+  }
+}
+const recent = ref<string[]>(loadRecent())
 function remember(d: string) {
   if (!d) return
   recent.value = [d, ...recent.value.filter((x) => x !== d)].slice(0, 6)
-  localStorage.setItem('jurymate_dirs', JSON.stringify(recent.value))
+  try {
+    localStorage.setItem('jurymate_dirs', JSON.stringify(recent.value))
+  } catch { /* 隐私模式或配额满：不影响主流程 */ }
 }
 
 async function start(incremental = false) {

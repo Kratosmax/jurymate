@@ -30,3 +30,6 @@ jurymate.key
 jurymate.key
 build-backend/
 dist-backend/
+
+# 本地构建产物与预览包
+temp/
