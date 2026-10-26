@@ -89,10 +89,13 @@ fn spawn_backend(app: &tauri::AppHandle) -> Result<(), String> {
             BACKEND_PORT
         ));
     };
+    // 把壳的版本传给 sidecar：打包后的 Python 程序读不到仓库里的
+    // tauri.conf.json，没有这一步前端就拿不到后端版本、无法提示不一致。
     let child = Command::new(&exe)
         .arg("--port")
         .arg(BACKEND_PORT.to_string())
         .arg("--no-browser")
+        .env("JURYMATE_VERSION", env!("CARGO_PKG_VERSION"))
         .spawn()
         .map_err(|e| format!("启动后端失败: {}", e))?;
     *BACKEND_CHILD.lock().unwrap() = Some(child);

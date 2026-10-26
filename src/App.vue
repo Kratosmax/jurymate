@@ -6,26 +6,53 @@ import { relaunch } from '@tauri-apps/plugin-process'
 
 const updateInfo = ref<{ version: string; body: string } | null>(null)
 const updating = ref(false)
+const APP_VERSION = __APP_VERSION__
+
+// 更新下载进度：457MB 的包不给反馈，用户会以为卡死
+const updStage = ref('')
+const updGot = ref(0)
+const updTotal = ref(0)
+const updPct = computed(() =>
+  updTotal.value ? Math.min(99, Math.round((updGot.value / updTotal.value) * 100)) : 0)
 
 async function checkUpdate(silent: boolean) {
   try {
     if (!(window as any).__TAURI_INTERNALS__) return   // 浏览器模式无更新器
     const u: Update | null = await check()
     if (u) updateInfo.value = { version: u.version, body: u.body ?? '' }
-    else if (!silent) toast('已是最新版本')
+    else if (!silent) toast(`已是最新版本（v${APP_VERSION}）`)
   } catch {
     if (!silent) toast('检查更新失败（清单未发布或网络不可达）')
   }
 }
 async function doUpdate() {
-  if (!updateInfo.value) return
+  if (!updateInfo.value || updating.value) return
   updating.value = true
+  updStage.value = '检查更新'
+  updGot.value = 0; updTotal.value = 0
   try {
     const u: Update | null = await check()
-    if (u) {
-      await u.downloadAndInstall()
-      await relaunch()
-    }
+    if (!u) return
+    updStage.value = '下载中'
+    await u.downloadAndInstall((ev) => {
+      if (ev.event === 'Started') {
+        updTotal.value = ev.data.contentLength ?? 0
+        updStage.value = '下载中'
+      } else if (ev.event === 'Progress') {
+        updGot.value += ev.data.chunkLength
+      } else if (ev.event === 'Finished') {
+        updStage.value = '校验并安装'
+        updGot.value = updTotal.value || updGot.value   // 校验通过才视为 100%
+      }
+    })
+    updStage.value = '重启中'
+    await relaunch()
+  } catch (e) {
+    // 说清阶段与影响，再给动作；不把异常类型直接甩给用户
+    const phase = updStage.value || '更新'
+    updStage.value = ''
+    toast(`${phase}失败，现有安装未被修改（可能需要管理员权限）。可重试，或到 Releases 手动下载。`)
+    console.error('[jurymate] 更新失败:', e)
   } finally {
     updating.value = false
   }
@@ -97,11 +124,19 @@ onMounted(() => {
                 @click="checkUpdate(false)">检查更新</button>
         <button v-if="updateInfo" class="act" style="padding:3px 10px;font-size:11px"
                 :disabled="updating" @click="doUpdate">
-          {{ updating ? '更新中…' : `升级到 ${updateInfo.version}` }}
+          {{ updating ? (updStage || '更新中…') : `升级到 v${updateInfo.version}` }}
         </button>
       </div>
+      <div style="margin-top:6px;font-size:10px;opacity:.6">v{{ APP_VERSION }}</div>
     </div>
-    <div v-if="updateInfo" class="hintbar" style="margin:14px 16px 0">
+    <div v-if="updating && updStage" class="hintbar" style="margin:10px 16px 0">
+      {{ updStage }}
+      <template v-if="updTotal">
+        {{ updPct }}%（{{ (updGot / 1048576).toFixed(0) }} / {{ (updTotal / 1048576).toFixed(0) }} MB）
+      </template>
+      <div class="prog" style="margin-top:6px"><div :style="{ width: updPct + '%' }" /></div>
+    </div>
+    <div v-if="updateInfo && !updating" class="hintbar" style="margin:14px 16px 0">
       可更新到 v{{ updateInfo.version }}{{ updateInfo.body ? '：' + updateInfo.body.slice(0, 120) : '' }}
     </div>
   </nav>

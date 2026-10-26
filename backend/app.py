@@ -30,6 +30,23 @@ if os.environ.get("JURYMATE_DEBUG"):
     logging.basicConfig(level=logging.DEBUG)
 log = logging.getLogger("jurymate")
 
+# 版本唯一来源是 src-tauri/tauri.conf.json。三条获取途径按可靠性排序：
+# 1. 环境变量 JURYMATE_VERSION —— Rust 壳拉起 sidecar 时注入（打包版走这条）
+# 2. 上游 tauri.conf.json —— 源码直跑 backend/app.py 时可用
+# 3. unknown —— 都没有时如实标注，用于前端提示版本不一致
+def _read_version() -> str:
+    import json as _json
+    env_ver = os.environ.get("JURYMATE_VERSION", "").strip()
+    if env_ver:
+        return env_ver
+    try:
+        conf = Path(__file__).resolve().parent.parent / "src-tauri" / "tauri.conf.json"
+        return str(_json.loads(conf.read_text(encoding="utf-8"))["version"])
+    except Exception:
+        return "unknown"
+
+APP_VERSION = _read_version()
+
 # 启动即把用户配置的代理写进环境变量：insightface(requests)/torch.hub(urlopen)
 # 的自动下载只认环境变量，晚设一步就会在用户填了代理的情况下仍走直连。
 import models as models_mod  # noqa: E402
@@ -445,7 +462,13 @@ def organize():
 
 @app.route("/api/system/detect")
 def system_detect():
-    return jsonify(models_mod.detect())
+    """硬件/后端/模型状态 + sidecar 版本。
+
+    前端会比对 version 与自身版本：本地构建若复用了旧 sidecar exe，
+    两边结构可能不一致，宁可明确提示，不要让界面静默错乱。"""
+    data = models_mod.detect()
+    data["version"] = APP_VERSION
+    return jsonify(data)
 
 @app.route("/api/models/download", methods=["POST"])
 def models_download():

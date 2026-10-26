@@ -68,7 +68,13 @@ async function poll() {
 onBeforeUnmount(() => clearInterval(timer))
 
 // 模型就绪检查（首启动向导）
+// sys 保持 null 表示"还没拿到/拿失败"，模板一律用 sys?.models 访问；
+// 后端结构变化或旧 sidecar 时不能让整个首页崩掉。
 const sys = ref<any>(null)
+const models = computed<any[]>(() =>
+  Array.isArray(sys.value?.models) ? sys.value.models : [])
+const hasMissingModel = computed(() =>
+  models.value.some((m: any) => m.installed === false))
 const dlRunning = ref(false)
 const dlId = ref('')
 const dlDone = ref(0)
@@ -79,6 +85,12 @@ const useMirror = ref(false)
 const errMsg = ref('')
 const errHint = ref('')
 const showModels = ref(false)
+const APP_VERSION = __APP_VERSION__
+// sidecar 版本与界面版本不一致时提示：本地构建复用旧 exe 会导致数据形状错配
+const verMismatch = computed(() => {
+  const v = sys.value?.version
+  return !!v && v !== 'unknown' && v !== APP_VERSION
+})
 const dlPct = computed(() => dlTotal.value ? Math.round(dlDone.value / dlTotal.value * 100) : 0)
 async function checkSys() {
   try {
@@ -143,6 +155,13 @@ const etaText = () => {
           {{ stage }} {{ done }}/{{ total }}{{ etaText() }}
         </div>
       </div>
+      <div v-if="verMismatch" class="hintbar" style="text-align:left;border-color:var(--warn)">
+        <b style="color:var(--warn)">后端与界面版本不一致</b>
+        <div style="margin-top:6px;font-size:12px;color:var(--dim)">
+          界面 v{{ APP_VERSION }} ／ 后端 v{{ sys.version }}。
+          常见于本地构建复用了旧的 sidecar，请重新打包后端；正式安装包不受影响。
+        </div>
+      </div>
       <div v-if="errMsg" class="hintbar" style="text-align:left;border-color:var(--bad)">
         <b style="color:var(--bad)">无法继续：{{ errMsg }}</b>
         <div v-if="errHint" style="margin-top:6px;color:var(--dim);font-size:12px">{{ errHint }}</div>
@@ -150,9 +169,9 @@ const etaText = () => {
           下方「模型就绪检查」可直接下载；国内网络建议先开镜像站或填代理。
         </div>
       </div>
-      <div v-if="sys && (showModels || sys.models.some((m: any) => m.installed === false))" class="hintbar" style="text-align:left">
+      <div v-if="sys && (showModels || hasMissingModel)" class="hintbar" style="text-align:left">
         <b>模型就绪检查</b>（{{ sys.backend_hint }}<template v-if="sys.gpu">｜{{ sys.gpu }}</template>）
-        <div v-for="m in (sys.models as any[])" :key="m.id" style="display:flex;align-items:center;gap:10px;margin-top:6px">
+        <div v-for="m in models" :key="m.id" style="display:flex;align-items:center;gap:10px;margin-top:6px">
           <span style="flex:1">{{ m.name }} · {{ m.size_mb }}MB</span>
           <span v-if="m.installed === true" style="color:var(--good)">✓ 已就绪</span>
           <template v-else>
