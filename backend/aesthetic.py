@@ -14,6 +14,22 @@ log = logging.getLogger("jurymate")
 
 _predictor = None
 
+# pyiqa 的权重落在 <数据目录>/torch/hub/pyiqa/<文件名>
+_MUSIQ_FILE = "musiq_koniq_ckpt-e95806b9.pth"
+
+def _assert_installed() -> None:
+    """确认 MUSIQ 权重已落盘，避免 pyiqa 自己联网下载。
+
+    pyiqa.create_metric 在权重缺失时会走 torch.hub 的 load_file_from_url
+    直接抓 HuggingFace——只认环境变量代理，不认应用内「网络设置」。
+    提前拦住，让用户走应用内下载器（支持镜像、代理、进度）。
+    """
+    w = paths.torch_dir() / "hub" / "pyiqa" / _MUSIQ_FILE
+    if not w.is_file() or w.stat().st_size < 1024:
+        raise errors.ModelUnavailable(
+            "审美评分 MUSIQ", "权重文件缺失",
+            "请在首页「模型就绪检查」里点下载（支持镜像与代理）")
+
 def _get():
     global _predictor
     if _predictor is not None:
@@ -27,9 +43,9 @@ def _get():
             detail=str(e)[:200],
             hint="请先按 requirements.txt 安装 pyiqa 与 torch",
         ) from e
+    _assert_installed()   # 缺失就报错，不让库自己去下载
     log.info("aesthetic: 加载 MUSIQ（CPU）…")
     try:
-        # 首次调用会在此自动下载约 104MB 权重
         _predictor = pyiqa.create_metric("musiq", device=torch.device("cpu"))
     except Exception as e:
         raise errors.ModelUnavailable(

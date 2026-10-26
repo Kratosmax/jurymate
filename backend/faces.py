@@ -38,9 +38,23 @@ _MESH = None
 def _model_root() -> str:
     """insightface 模型根：统一放 JuryMate 自己的数据目录。
 
-    布局为 <root>/models/buffalo_l/（insightface 的约定），缺失时
-    FaceAnalysis 会自行下载解压到该处。"""
+    布局为 <root>/models/buffalo_l/（insightface 的约定）。"""
     return str(paths.ensure("insightface"))
+
+def _assert_installed() -> None:
+    """确认 buffalo_l 已落盘，避免 insightface 自行联网下载。
+
+    insightface 的 FaceAnalysis 在模型缺失时会调用 ensure_available() 直接
+    从 GitHub 拉 340MB——它只认环境变量代理，不认应用内「网络设置」的镜像
+    与代理。结果就是：用户明明配好了镜像，库还是慢/失败，且完全没有进度。
+    这里提前拦住，让用户走应用内的下载器（支持镜像、代理、进度）。
+    """
+    want = paths.ensure("insightface") / "models" / "buffalo_l"
+    if not want.is_dir() or not any(want.iterdir()):
+        raise errors.ModelUnavailable(
+            "buffalo_l", "模型文件缺失",
+            "请在首页「模型就绪检查」里点下载（支持镜像与代理），或手动放入 "
+            f"{want}")
 
 def _providers() -> list[str]:
     """EP 顺序由显卡厂商决定（见 hardware.py），CPU 兜底。"""
@@ -51,6 +65,7 @@ def _get():
     if _FACES is not None:
         return _FACES
     from insightface.app import FaceAnalysis
+    _assert_installed()   # 缺失就报错，不让库自己去下载
     root = _model_root()
     prov = _providers()
     log.info("faces: 初始化 buffalo_l @ %s, providers=%s", root, prov)
