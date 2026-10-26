@@ -34,11 +34,21 @@ async function poll() {
   const p = await api.progress()
   done.value = p.done; total.value = p.total; stage.value = p.stage
   if (!p.running) {
-  clearInterval(timer)
-  scanning.value = false
-  if (p.error) { emit('toast', '失败: ' + p.error); return }
-  emit("refresh")
-  emit("toast", "整理完成，看看有哪些需要你拍板")
+    clearInterval(timer)
+    scanning.value = false
+    if (p.error) {
+      // 模型类失败要显眼且可操作：直接展开模型面板，让用户能立刻点下载
+      errMsg.value = p.error
+      errHint.value = p.error_hint ?? ''
+      if (p.error_kind === 'model') {
+        showModels.value = true
+        checkSys()
+      }
+      return
+    }
+    errMsg.value = ''; errHint.value = ''
+    emit('refresh')
+    emit('toast', '整理完成，看看有哪些需要你拍板')
   }
 }
 onBeforeUnmount(() => clearInterval(timer))
@@ -52,6 +62,9 @@ const dlTotal = ref(1)
 const netMirrors = ref<string[]>([])
 const netProxy = ref('')
 const useMirror = ref(false)
+const errMsg = ref('')
+const errHint = ref('')
+const showModels = ref(false)
 const dlPct = computed(() => dlTotal.value ? Math.round(dlDone.value / dlTotal.value * 100) : 0)
 async function checkSys() {
   try {
@@ -116,7 +129,14 @@ const etaText = () => {
           {{ stage }} {{ done }}/{{ total }}{{ etaText() }}
         </div>
       </div>
-      <div v-if="sys && sys.models.some((m: any) => m.installed === false)" class="hintbar" style="text-align:left">
+      <div v-if="errMsg" class="hintbar" style="text-align:left;border-color:var(--bad)">
+        <b style="color:var(--bad)">无法继续：{{ errMsg }}</b>
+        <div v-if="errHint" style="margin-top:6px;color:var(--dim);font-size:12px">{{ errHint }}</div>
+        <div style="margin-top:8px;font-size:12px">
+          下方「模型就绪检查」可直接下载；国内网络建议先开镜像站或填代理。
+        </div>
+      </div>
+      <div v-if="sys && (showModels || sys.models.some((m: any) => m.installed === false))" class="hintbar" style="text-align:left">
         <b>模型就绪检查</b>（{{ sys.backend_hint }}<template v-if="sys.gpu">｜{{ sys.gpu }}</template>）
         <div v-for="m in (sys.models as any[])" :key="m.id" style="display:flex;align-items:center;gap:10px;margin-top:6px">
           <span style="flex:1">{{ m.name }} · {{ m.size_mb }}MB</span>

@@ -13,6 +13,7 @@ from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory
 
+import errors
 import paths
 import pipeline
 
@@ -63,7 +64,8 @@ def _cors_headers(resp):
     return resp
 
 STATE = {"photos": [], "groups": [], "folder": None, "settings": {}, "undo_stack": []}
-TASK = {"running": False, "done": 0, "total": 0, "stage": "", "error": None}
+TASK = {"running": False, "done": 0, "total": 0, "stage": "", "error": None,
+        "error_kind": None, "error_hint": ""}
 _LOCK = threading.Lock()          # 启动任务互斥
 _SNAPSHOT_LOCK = threading.Lock() # STATE 列表引用快照（API 读 vs worker 原地写）
 
@@ -144,6 +146,25 @@ def index():
                         "hint": "前端由 Tauri 提供；浏览器模式请用源码运行"})
     return send_from_directory(app.static_folder, "index.html")
 
+def preflight_models():
+    """扫描前的模型可用性检查：缺失就抛 ModelUnavailable，别等跑到一半才炸。
+
+    恢复进度/增量补扫本身不推理，但后续的召回补评分、复查都会用到模型；
+    更重要的是——如果模型缺了却让用户以为"整理完成"，结果里所有人脸信号
+    都是空的，比直接报错难排查得多。
+    """
+    missing = [m for m in models_mod.MODELS if not models_mod._installed(m)]
+    if missing:
+        # 数量多时只列前两个，避免提示条过长
+        names = "、".join(m["name"] for m in missing[:2])
+        if len(missing) > 2:
+            names += f" 等 {len(missing)} 个"
+        raise errors.ModelUnavailable(
+            names,
+            detail="尚未下载",
+            hint="请在首页「模型就绪检查」逐个点下载；国内网络可在网络设置里开启镜像站或填代理",
+        )
+
 @app.route("/api/start", methods=["POST"])
 def start():
     body = request.json or {}
@@ -154,7 +175,8 @@ def start():
     with _LOCK:
         if TASK["running"]:
             return jsonify({"ok": False, "error": "任务进行中"}), 409
-        TASK.update(running=True, done=0, total=0, stage="", error=None)
+        TASK.update(running=True, done=0, total=0, stage="", error=None,
+                    error_kind=None, error_hint="")
     STATE.update(folder=folder,
                  settings={**DEFAULT_SETTINGS, **STATE.get("settings", {})})
 
@@ -173,31 +195,44 @@ def start():
                     load_state(folder)
                     do_incremental = bool(STATE["photos"])   # 磁盘无 state → 退化为全量
                 if do_incremental:
+                    # 增量要推理新图，必须先确认模型齐备
+                    TASK.update(stage="检查模型…")
+                    preflight_models()
+                    # 管线跑几分钟，不能持锁——否则 /api/state 全程阻塞、界面假死。
+                    # 它原地扩展 photos/groups，读侧靠 _SNAPSHOT_LOCK 的浅拷贝兜住。
+                    n_new = pipeline.add_new_photos(
+                        folder, STATE["photos"], STATE["groups"],
+                        Path(folder) / paths.STATE_DIRNAME, STATE["settings"], progress)
                     with _SNAPSHOT_LOCK:
-                        n_new = pipeline.add_new_photos(
-                            folder, STATE["photos"], STATE["groups"],
-                            Path(folder) / paths.STATE_DIRNAME, STATE["settings"], progress)
-                    TASK.update(done=len(STATE["photos"]), total=len(STATE["photos"]),
-                                stage=f"增量完成：新增 {n_new} 张")
-                    save_state()
+                        TASK.update(done=len(STATE["photos"]), total=len(STATE["photos"]),
+                                    stage=f"增量完成：新增 {n_new} 张")
+                        save_state()
                     return
-            # 从磁盘恢复进度（跨会话续做）
+            # 从磁盘恢复进度（跨会话续做）——纯读 state，不推理，不需要模型；
+            # 召回补评分时才用 musiq，那条路径自己会报 ModelUnavailable
             if load_state(folder):
                 refresh_statuses()
                 save_state()
                 return
-            # 全量扫描
+            # 全量扫描：需要全套模型，缺了立刻失败而不是产出"无人脸"的空结果
+            TASK.update(stage="检查模型…")
+            preflight_models()
             with _SNAPSHOT_LOCK:
                 STATE.update(photos=[], groups=[])
+            # 同上：扫描期间不持锁，让前端能持续读进度与已有状态
             result = pipeline.run(folder, Path(folder) / paths.STATE_DIRNAME,
                                   STATE["settings"], progress)
             with _SNAPSHOT_LOCK:
                 STATE.update(photos=result["photos"], groups=result["groups"])
-            refresh_statuses()
-            save_state()
+                refresh_statuses()
+                save_state()
+        except errors.ModelUnavailable as e:
+            # 模型类失败：给用户可操作的信息，而不是一句 traceback 尾巴
+            log.error("管线中止（模型不可用）：%s", e)
+            TASK.update(error=str(e), error_kind="model", error_hint=e.hint)
         except Exception as e:
             log.exception("管线失败")
-            TASK["error"] = str(e)
+            TASK.update(error=str(e), error_kind="other", error_hint="")
         finally:
             TASK["running"] = False
     threading.Thread(target=worker, daemon=True).start()
@@ -205,7 +240,8 @@ def start():
 
 @app.route("/api/progress")
 def progress_api():
-    return jsonify({k: TASK[k] for k in ("running", "done", "total", "stage", "error")})
+    return jsonify({k: TASK[k] for k in ("running", "done", "total", "stage",
+                                             "error", "error_kind", "error_hint")})
 
 @app.route("/api/state")
 def state_api():
@@ -271,19 +307,34 @@ def recall():
     每次召回把原因落进 recall_stats.json——这是阈值自校准的数据源：
     某类原因被召回得越多，说明该阈值越不可信。"""
     path = (request.json or {}).get("path")
+    # 评分（可能触发模型加载，首次约 20 秒）必须在锁外做：持锁推理会把
+    # /api/state 等所有读请求一起卡住，界面表现为假死。
     with _SNAPSHOT_LOCK:
         ph = next((p for p in STATE["photos"] if p["path"] == path), None)
         if not ph:
             return jsonify({"ok": False, "error": "照片不存在"}), 404
-        return _recall_apply(ph, path)
+        need_score = ph.get("aesthetic") is None
+    if need_score:
+        try:
+            ph_aes = pipeline.aesthetic.score(pipeline.load_preview(path))
+        except errors.ModelUnavailable as e:
+            return jsonify({"ok": False, "error": str(e),
+                            "model": e.model, "hint": e.hint}), 503
+    else:
+        ph_aes = None
+    with _SNAPSHOT_LOCK:
+        ph = next((p for p in STATE["photos"] if p["path"] == path), None)
+        if not ph:
+            return jsonify({"ok": False, "error": "照片不存在"}), 404
+        return _recall_apply(ph, path, ph_aes)
 
-def _recall_apply(ph: dict, path: str):
+def _recall_apply(ph: dict, path: str, ph_aes: float | None = None):
     push_undo()
     old_reasons = list(ph["reject_reasons"])
     ph["reject_reasons"] = []
     ph["manual_winner"] = True   # 人工召回 = 持久胜出，后续 refresh 不得覆盖
-    if ph.get("aesthetic") is None:
-        ph["aesthetic"] = pipeline.aesthetic.score(pipeline.load_preview(path))
+    if ph_aes is not None:
+        ph["aesthetic"] = ph_aes
     ph["score"] = pipeline.composite_score(ph, ph.get("aesthetic"), [])
     ph["status"] = "winner"
     try:
@@ -391,8 +442,6 @@ def organize():
         save_state()
     plan["moved"] = len(moves)
     return jsonify({"ok": True, **plan})
-
-import models as models_mod
 
 @app.route("/api/system/detect")
 def system_detect():

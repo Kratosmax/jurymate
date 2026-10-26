@@ -7,6 +7,7 @@
 """
 import logging
 
+import errors
 import paths  # noqa: F401  导入即设 TORCH_HOME，必须早于 pyiqa/torch
 
 log = logging.getLogger("jurymate")
@@ -17,10 +18,25 @@ def _get():
     global _predictor
     if _predictor is not None:
         return _predictor
-    import pyiqa
-    import torch
+    try:
+        import pyiqa
+        import torch
+    except ImportError as e:
+        raise errors.ModelUnavailable(
+            "审美评分 MUSIQ（依赖缺失）",
+            detail=str(e)[:200],
+            hint="请先按 requirements.txt 安装 pyiqa 与 torch",
+        ) from e
     log.info("aesthetic: 加载 MUSIQ（CPU）…")
-    _predictor = pyiqa.create_metric("musiq", device=torch.device("cpu"))
+    try:
+        # 首次调用会在此自动下载约 104MB 权重
+        _predictor = pyiqa.create_metric("musiq", device=torch.device("cpu"))
+    except Exception as e:
+        raise errors.ModelUnavailable(
+            "审美评分 MUSIQ（约 104MB）",
+            detail=str(e)[:200],
+            hint="请在首页「模型就绪检查」点下载，或在网络设置里配置代理后重试",
+        ) from e
     return _predictor
 
 def score(img_pil) -> float:
@@ -49,7 +65,7 @@ def score_batch(imgs) -> list:
         import torch
         from torchvision.transforms.functional import to_tensor
         torch.set_num_threads(4)
-        m = _get()
+        m = _get()   # 模型不可用会抛 ModelUnavailable，不吞
         by_idx = dict(prepped)
         for size, idxs in groups.items():
             try:
@@ -59,9 +75,14 @@ def score_batch(imgs) -> list:
                 for i, raw in zip(idxs, v.flatten().tolist()):
                     out[i] = round(_stretch(float(raw)), 1)
             except Exception as e:
+                # 单批推理失败：这一批记 None，其他批次继续（已写进日志）
                 log.warning("aesthetic: 批推理失败 size=%s (%s)", size, e)
     except ImportError as e:
-        log.warning("aesthetic: torch 缺失(%s)", e)
+        raise errors.ModelUnavailable(
+            "审美评分 MUSIQ（依赖缺失）",
+            detail=str(e)[:200],
+            hint="请先按 requirements.txt 安装 pyiqa 与 torch",
+        ) from e
     return out
 
 _STRETCH = [(0, 0.5), (40, 1.0), (55, 2.5), (70, 3.5), (80, 4.5), (90, 5.0), (100, 5.0)]

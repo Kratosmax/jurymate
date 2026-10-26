@@ -25,7 +25,7 @@ async function recall(path: string) {
   if (r.ok) {
     emit('changed')
     emit('toast', `已召回，审美分 ${r.aesthetic ?? '—'}`)
-  } else emit('toast', r.error ?? '')
+  } else emit('toast', (r.error ?? '') + (r.hint ? `｜${r.hint}` : ''))
 }
 function onKey(e: KeyboardEvent) {
   if (!(document.querySelector('#p-review') as HTMLElement)?.offsetParent) return

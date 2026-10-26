@@ -16,6 +16,7 @@ import logging
 import cv2
 import numpy as np
 
+import errors
 import hardware
 import paths
 
@@ -53,12 +54,21 @@ def _get():
     root = _model_root()
     prov = _providers()
     log.info("faces: 初始化 buffalo_l @ %s, providers=%s", root, prov)
-    # 注意：insightface 2.1 的 taskname 是动态格式 'landmark_3d_68'
-    # （landmark_%dd_%d），0.7 的 'landmark_3d68' 匹配不上会被静默过滤
-    app = FaceAnalysis(name="buffalo_l", root=root,
-                       allowed_modules=["detection", "landmark_3d_68", "recognition"],
-                       providers=prov)
-    app.prepare(ctx_id=0, det_size=(640, 640))
+    try:
+        # 注意：insightface 2.1 的 taskname 是动态格式 'landmark_3d_68'
+        # （landmark_%dd_%d），0.7 的 'landmark_3d68' 匹配不上会被静默过滤
+        app = FaceAnalysis(name="buffalo_l", root=root,
+                           allowed_modules=["detection", "landmark_3d_68", "recognition"],
+                           providers=prov)
+        app.prepare(ctx_id=0, det_size=(640, 640))
+    except Exception as e:
+        # 首次运行会在此自动下载 340MB；失败通常是网络/许可问题。
+        # 不能吞掉——吞掉会让整批照片变成"无人脸"，失焦与闭眼判定全失效。
+        raise errors.ModelUnavailable(
+            "人脸检测 buffalo_l（约 340MB）",
+            detail=str(e)[:200],
+            hint="请在首页「模型就绪检查」点下载，或在网络设置里配置代理/镜像后重试",
+        ) from e
     _FACES = app
     return _FACES
 
@@ -68,16 +78,27 @@ def _get_mesh():
         return _MESH
     mp_model = paths.data_dir() / "face_landmarker.task"
     if not mp_model.exists():
-        log.warning("faces: FaceLandmarker 模型缺失（%s），闭眼检测降级为不可用", mp_model)
-        return None
+        # 闭眼检测依赖它；缺失时明确失败，不静默跳过闭眼判定
+        raise errors.ModelUnavailable(
+            "闭眼检测 FaceLandmarker（3.7MB）",
+            detail=f"未找到 {mp_model}",
+            hint="请在首页「模型就绪检查」点下载后重试",
+        )
     import mediapipe as mp
     from mediapipe.tasks import python as mp_python
     from mediapipe.tasks.python import vision
-    base = mp.tasks.BaseOptions(model_asset_path=str(mp_model))
-    opts = vision.FaceLandmarkerOptions(
-        base_options=base, running_mode=vision.RunningMode.IMAGE,
-        num_faces=12, min_face_detection_confidence=0.3)
-    _MESH = vision.FaceLandmarker.create_from_options(opts)
+    try:
+        base = mp.tasks.BaseOptions(model_asset_path=str(mp_model))
+        opts = vision.FaceLandmarkerOptions(
+            base_options=base, running_mode=vision.RunningMode.IMAGE,
+            num_faces=12, min_face_detection_confidence=0.3)
+        _MESH = vision.FaceLandmarker.create_from_options(opts)
+    except Exception as e:
+        raise errors.ModelUnavailable(
+            "闭眼检测 FaceLandmarker（3.7MB）",
+            detail=str(e)[:200],
+            hint="模型文件可能损坏，请删除后重新下载",
+        ) from e
     return _MESH
 
 def _downscale(img_bgr: np.ndarray, long_edge: int = 1600):
@@ -123,11 +144,9 @@ def analyze(img_bgr: np.ndarray, settings: dict | None = None) -> list[dict]:
     th_open = (settings or {}).get("ear_open", _EAR_OPEN)
     img, scale = _downscale(img_bgr)
     h, w = img.shape[:2]
-    try:
-        det_faces = _get().get(img)
-    except Exception as e:
-        log.warning("faces: insightface 分析失败(%s)，仅尝试 FaceMesh", e)
-        det_faces = []
+    # 模型不可用必须冒泡（ModelUnavailable）；单张图的推理异常才算可降级，
+    # 但也要留日志，不能像以前那样静默变成"无人脸"。
+    det_faces = _get().get(img)
 
     out = []
     def push(bbox, ear_l=None, ear_r=None, source="insightface"):
@@ -144,32 +163,32 @@ def analyze(img_bgr: np.ndarray, settings: dict | None = None) -> list[dict]:
         push(f.bbox.tolist())
 
     # MediaPipe：给 insightface 的脸挂 EAR；insightface 漏的脸补录
-    mesh = _get_mesh()
-    if mesh is not None:
-        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        try:
-            res = mesh.detect(_mp.Image(image_format=_mp.ImageFormat.SRGB, data=rgb))
-        except Exception as e:
-            log.warning("faces: FaceMesh 失败(%s)，本图无 EAR 信号", e)
-            res = None
-        if res is not None:
-            for mp_lm in res.face_landmarks or []:
-                xs = [p.x * w for p in mp_lm]
-                ys = [p.y * h for p in mp_lm]
-                bbox = [min(xs), min(ys), max(xs), max(ys)]
-                el, er = _ear_from_mp(mp_lm, _L_EAR), _ear_from_mp(mp_lm, _R_EAR)
-                # 按 IoU 挂到 insightface 的脸（中心距在合影贴脸时会错配）
-                best, best_iou = None, 0.0
-                for rec in out:
-                    iou = _iou(bbox, rec["bbox"])
-                    if iou > best_iou:
-                        best, best_iou = rec, iou
-                if best is not None and best_iou > 0.3 and best.get("ear_l") is None:
-                    best["ear_l"], best["ear_r"] = round(el, 3), round(er, 3)
-                    _apply_ear(best, el, er, th, th_open)
-                elif best_iou <= 0.3:
-                    if bbox[2] - bbox[0] >= 56:   # insightface 漏检的脸补录
-                        push(bbox, round(el, 3), round(er, 3), source="facemesh")
+    mesh = _get_mesh()   # 缺失即抛 ModelUnavailable，不静默跳过闭眼判定
+    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    try:
+        res = mesh.detect(_mp.Image(image_format=_mp.ImageFormat.SRGB, data=rgb))
+    except Exception as e:
+        # 单张图推理失败可接受（返回无 EAR 的脸），但必须留痕
+        log.warning("faces: FaceMesh 推理失败(%s)，本图无 EAR 信号", e)
+        res = None
+    if res is not None:
+        for mp_lm in res.face_landmarks or []:
+            xs = [p.x * w for p in mp_lm]
+            ys = [p.y * h for p in mp_lm]
+            bbox = [min(xs), min(ys), max(xs), max(ys)]
+            el, er = _ear_from_mp(mp_lm, _L_EAR), _ear_from_mp(mp_lm, _R_EAR)
+            # 按 IoU 挂到 insightface 的脸（中心距在合影贴脸时会错配）
+            best, best_iou = None, 0.0
+            for rec in out:
+                iou = _iou(bbox, rec["bbox"])
+                if iou > best_iou:
+                    best, best_iou = rec, iou
+            if best is not None and best_iou > 0.3 and best.get("ear_l") is None:
+                best["ear_l"], best["ear_r"] = round(el, 3), round(er, 3)
+                _apply_ear(best, el, er, th, th_open)
+            elif best_iou <= 0.3:
+                if bbox[2] - bbox[0] >= 56:   # insightface 漏检的脸补录
+                    push(bbox, round(el, 3), round(er, 3), source="facemesh")
 
     out = [r for r in out if not r.get("tiny", (r["bbox"][2]-r["bbox"][0]) < 40)]
     return out

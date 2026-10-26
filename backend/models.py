@@ -112,7 +112,6 @@ MODELS = [
         "path": paths.data_dir() / "face_landmarker.task",
         "url": ("https://storage.googleapis.com/mediapipe-models/face_landmarker/"
                 "face_landmarker/float16/1/face_landmarker.task"),
-        "mode": "manual",
         "unpack": "file",
     },
     {
@@ -122,7 +121,6 @@ MODELS = [
         # 与 faces._model_root() 同一处：<数据目录>/insightface/models/buffalo_l
         "path": paths.data_dir() / "insightface" / "models" / "buffalo_l",
         "url": "https://github.com/deepinsight/insightface/releases/download/models/buffalo_l.zip",
-        "mode": "manual",
         # 产物是 zip：必须解压成目录，insightface 的 storage.download 也是这么做的
         "unpack": "zip",
     },
@@ -136,7 +134,6 @@ MODELS = [
                 / "musiq_koniq_ckpt-e95806b9.pth",
         "url": ("https://hf-mirror.com/chaofengc/IQA-PyTorch-Weights/resolve/main/"
                 "musiq_koniq_ckpt-e95806b9.pth"),
-        "mode": "manual",
         "unpack": "file",
     },
 ]

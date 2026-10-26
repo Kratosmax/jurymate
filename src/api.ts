@@ -91,10 +91,10 @@ export const api = {
   },
   start: (folder: string, incremental: boolean) =>
     req<{ ok: boolean; error?: string }>('/api/start', { folder, incremental }),
-  progress: () => req<{ running: boolean; done: number; total: number; stage: string; error: string | null }>('/api/progress'),
+  progress: () => req<{ running: boolean; done: number; total: number; stage: string; error: string | null; error_kind?: string | null; error_hint?: string }>('/api/progress'),
   pk: (group_id: number, action: 'pick' | 'all' | 'none', pick?: number) =>
     req<{ ok: boolean; error?: string }>('/api/pk', { group_id, action, pick }),
-  recall: (path: string) => req<{ ok: boolean; aesthetic: number | null; error?: string }>('/api/recall', { path }),
+  recall: (path: string) => req<{ ok: boolean; aesthetic: number | null; error?: string; hint?: string }>('/api/recall', { path }),
   undo: () => req<{ ok: boolean; error?: string }>('/api/undo', {}),
   organize: (dry: boolean) => req<{ ok: boolean; moved?: number; winners?: number; rejects?: number; pending_kept?: number; skipped_conflict?: number; error?: string }>('/api/organize', { dry }),
   exportCsv: () => req<{ ok: boolean; path?: string; rows?: number; error?: string }>('/api/export_csv', {}),
