@@ -71,21 +71,22 @@ CPU 永远兜底。首选 EP 没装时自动降级（N 卡只装了 DML 包仍�
 `models.detect()` 只转述 `hardware` 的结论，不再自己判断——避免出现
 "界面提示推荐 X、实际跑 Y"的分裂。
 
-## 2. 当前快照（最后核验 2026-10-26）
+## 2. 当前快照（最后核验 2026-10-26 21:xx）
 
-- 版本：0.1.0（版本源 `src-tauri/tauri.conf.json`，`package.json` 与
-  `Cargo.toml` 必须同步；CI 会校验三处与标签一致）
+- 版本：**0.1.3**（版本源 `src-tauri/tauri.conf.json`；`package.json`、
+  `Cargo.toml`、`Cargo.lock` 必须同步，CI 会校验与标签一致）
 - 分支：master；remote：`origin` → https://github.com/Kratosmax/jurymate
-- 仓库：**PUBLIC**，23 个提交，标签 `v0.1.0`
-- 当前工作：0.1.0 发布物料完成；打包版实机验证通过
-- 线上状态：**已发布** https://github.com/Kratosmax/jurymate/releases/tag/v0.1.0
-  - CI run 40280616911 success；7 个资产齐全（Setup/ZIP/MSI + 2×sig +
+- 仓库：**PUBLIC**，标签已到 `v0.1.3`
+- 线上状态：**v0.1.3 已发布**
+  https://github.com/Kratosmax/jurymate/releases/tag/v0.1.3
+  - CI run 40324214220 success；7 个资产齐全（Setup/ZIP/MSI + 2×sig +
     latest.json + SHA256SUMS.txt）
-  - latest.json: version=0.1.0，载体为 NSIS setup.exe，签名 key id
+  - latest.json: version=0.1.3，载体为 NSIS setup.exe，签名 key id
     fad7706de1435f20 与 tauri.conf.json 公钥一致（已核验）
-  - eleases/latest 实际指向 v0.1.0；setup.exe HTTP 200 / 456.7MB
+  - releases/latest 实际指向 v0.1.3
+- 自动更新：0.1.2 起文件锁问题已修，0.1.2 及以后可应用内升级；
+  **0.1.0/0.1.1 必须手动装一次**（历史遗留，服务端无法修复）
 - **待用户**：提供 2-3 张正面人像含闭眼样本（闭眼阈值真数据校准）
-
 ### 发布方式
 
 - 标签触发：推送 `v*` 标签 → `.github/workflows/release.yml` 自动构建并发布
@@ -112,15 +113,15 @@ CPU 永远兜底。首选 EP 没装时自动降级（N 卡只装了 DML 包仍�
 2. debug 后端（`jury-backend-debug.exe`）未随包分发，`bundle.resources`
    只映射正式版；lib.rs 已做"debug 缺失回退正式版"，若要真正用 debug
    模式需补资源映射
-3. 模型下载入口与库的自动下载并存：insightface/pyiqa 在模型缺失时仍会
-   自行下载到同一目录，UI 的下载按钮走本仓库下载器（支持镜像/代理）。
-   已加 preflight 拦截（缺模型时明确报错），但库自身的自动下载仍在
-4. 更新器代理接入：**实现已完成但未提交未验证**，见 §9 交接
-5. 0.1.2 之后的版本才能真正自动更新。**0.1.0/0.1.1 → 0.1.2 必须手动装一次**，
-   这是已发布版本的历史遗留，无法通过服务端修复
-6. P1：胜出清单联动 LightCraft 调色（CSV 已有，缺导入自动化）；
+3. `%TEMP%\_MEI*` 残留：onefile 每次启动解压约 1.1GB，被强杀时不清理。
+   实测累积 27 个 / 27.45GB 挤爆系统盘（C 盘只剩 0.1GB）。
+   **尝试过的方案失败了**：在 `paths.py` 加启动时 `_cleanup_mei_dirs()`，
+   导致后端起不来（推测误删了自身正在使用的 `_MEIPASS`），已回退。
+   根治方向：改 `--onedir` 打包，或让 Rust 壳在退出时清理；
+   不要用运行中的 Python 进程去猜哪些 `_MEI` 可删
+4. P1：胜出清单联动 LightCraft 调色（CSV 已有，缺导入自动化）；
    recall_stats 阈值自校准；千张并行（信号/评分多进程）
-7. P2：EXIF 相机水印；ArcFace 同人归组
+5. P2：EXIF 相机水印；ArcFace 同人归组
 
 没有其他已授权未完成事项；上述之外等待用户需求，不自行扩大范围。
 
@@ -191,72 +192,56 @@ CPU 永远兜底。首选 EP 没装时自动降级（N 卡只装了 DML 包仍�
 - 架构、入口、安全边界、验证命令变化时同步更新对应章节
 - 与 Git/源码/用户指示冲突时，以更新的可验证证据为准并修正本文件
 
-## 9. 会话交接（2026-10-26 18:xx）
+
+## 9. 会话交接（2026-10-26 21:xx）
 
 ### 当前状态
 
-- **线上最新版本：v0.1.2**（已发布并核验通过）
-- **master 最新提交：`d85eeab`**
-- **工作区有未提交改动**：`src/App.vue`、`src/views/HomeView.vue`
-  （更新器代理接入，实现完整、`npm run build` 通过，但**未打包、未验证、未提交**）
+- **线上最新版本：v0.1.3**（已发布，资产 7 项齐全，签名 key id 匹配）
+- **master 最新提交：82dc06**（0.1.3 的发布提交是 36e3f47）
+- **工作区干净**
 
-### 未提交改动的意图（待办 #4）
+### 本会话完成的三项
 
-**问题**：Tauri 更新器只读系统代理（`reqwest` 的 `system-proxy` feature），
-不读应用内「网络设置」的 `http_proxy`。国内用户会出现"模型能下载、检查更新却失败"。
-
-**已完成的改动**：
-
-| 文件 | 改动 |
+| 版本 / 提交 | 内容 |
 |---|---|
-| `src/App.vue` | 新增 `updaterProxy()` 读取 `api.netSettingsGet().http_proxy`；`check()` 改为 `check({ proxy })`；`invalidateProxy()` 供设置变更后清缓存；失败提示改为引导用户配代理 |
-| `src/views/HomeView.vue` | `saveNet()` 成功后 `emit('netsaved')`；`defineEmits` 增加 `netsaved` |
-| `src/App.vue` 模板 | `HomeView` 绑定 `@netsaved="invalidateProxy"` |
-
-**关键依据**：`node_modules/@tauri-apps/plugin-updater/dist-js/index.d.ts`
-的 `CheckOptions.proxy?: string` —— 前端 API 原生支持，**不需要改 Rust**。
-未配置代理时传 `undefined`，行为退回系统代理/直连，不改变原有默认。
-
-### 下一步该做什么（按顺序）
-
-1. `npm run build` 已通过；**接着重建 sidecar 并打包**验证界面无报错：
-   ```powershell
-   # 注意：本地打包不会自动重建 sidecar，必须手动跑，否则会得到
-   # "新前端 + 旧后端" 的混合体（0.1.1 开发时踩过，见 §7 教训）
-   $py = "F:\git\cullmate\.venv\Scripts\python.exe"
-   Push-Location build-backend
-   & $py -m PyInstaller --name jury-backend --onefile ../backend/app.py `
-       --distpath ../dist-backend --workpath ./work --specpath . --noconfirm
-   Pop-Location
-   $env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content .keys\jurymate.key -Raw).Trim()
-   $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
-   npm run tauri build
-   ```
-2. **真机验证代理生效**：在应用「网络设置」填 `http://127.0.0.1:10808`，
-   保持系统代理关闭，点「检查更新」应能读到清单（这是本次改动的验证点）。
-   本机代理在 `127.0.0.1:10808`。
-3. 版本升到 0.1.3（四处：`tauri.conf.json` / `package.json` / `Cargo.toml` /
-   `Cargo.lock`），更新 `RELEASE_NOTES_CURRENT.md`（**只写当前版本**），
-   提交 → 推 master → 打标签 → 等 CI → 核验线上资产。
-4. 剩余待办 #2、#3、#6、#7 见上。
-
-### 本次会话已完成的事（避免重复劳动）
-
-| 版本 | 主要内容 |
-|---|---|
-| v0.1.0 | 首个公开发布；发布物料、CI 工作流、签名链路 |
 | v0.1.1 | 更新进度显示、版本号常驻、前后端版本一致性检查、首页崩溃修复 |
-| v0.1.2 | **修复 sidecar 文件锁导致自动更新失败**（关键缺陷） |
+| v0.1.2 (d06fe8) | **修复 sidecar 文件锁导致自动更新失败**——更新器报 "Error opening file for writing" |
+| v0.1.3 (36e3f47) | **更新检查接入应用内代理**；修复代理读取失败被永久缓存为空 |
+| 82dc06（未发版） | **禁止 insightface/pyiqa 自行联网下载模型**，缺失时明确报错引导用户走应用内下载器 |
+
+82dc06 已在 master 但未包含在任何 Release 里，下一个版本会自动带上。
+
+### 更新器代理：验证方法与结论
+
+改动的正确性用**客观证据**确认，不是看界面有没有反应：
+
+1. 起一个记录请求的 TCP 转发代理（监听 10809）
+2. 应用「网络设置」填 http://127.0.0.1:10809，**系统代理保持关闭**
+3. 点「检查更新」，代理端日志出现：
+   CONNECT github.com:443、CONNECT release-assets.githubusercontent.com:443
+4. 反向对照：把代理改成死端口 59999，检查更新报
+   error sending request for url (...)，证明参数确实被使用而非被忽略
 
 ### 踩过的坑（务必先读）
 
-1. **本地 `npm run tauri build` 不会重建 sidecar**，会复用 `dist-backend/` 里的旧 exe，
-   得到"新前端 + 旧后端"，表现为接口字段缺失、前端报错。打包前必须手动重建。
-2. **更新器走系统代理**，不读应用内设置。验证更新链路时要么开系统代理，
-   要么等 #4 的改动发版。本机系统代理用 `HKCU:\...\Internet Settings\ProxyEnable`。
-3. **用本地旧构建测自动更新会误判**：本地构建的 exe 里 endpoint 可能还是
-   `YOUR_GH`。必须用 GitHub Releases 上的正式包做升级测试。
-4. **git 历史不能带大文件**：`dist-backend/`、`build-backend/`、`temp/` 已在
-   .gitignore，历史曾因 457MB exe 膨胀到 2.9GB 被 `filter-branch` 清理过。
-5. **PowerShell 控制台显示中文会乱码**，但文件本身正常。判断文件内容用
-   `read` 工具或 `[IO.File]::ReadAllText(..., UTF8)`，别信控制台输出。
+1. **本地 
+pm run tauri build 不会重建 sidecar**，会复用 dist-backend/ 里的旧 exe，
+   得到"新后端 + 旧前端"。打包前必须手动跑 PyInstaller。
+   且 PyInstaller 见到产物存在会跳过，要先 Remove-Item dist-backend\jury-backend.exe。
+2. **%TEMP%\_MEI* 会吃光 C 盘**。onefile 每次启动解压约 1.1GB，被强杀时不清理。
+   实测累积 27 个共 27.45GB。开发期间频繁重启应用时，每隔一段时间清一次；
+   排查异常的 ENOSPC 报错时先看这里。**不要试图用运行中的 Python 进程去清理**
+   （试过，导致后端起不来，已回退，见待办 #3）。
+3. **Tauri 窗口标题改不动 document.title**。前端调试想输出信息，写进页面可见区域
+   （例如侧栏小字），不要用 document.title。
+4. **UIA 点击坐标要用 get_app_state(mode='text') 拿到的 rect**，别按截图估。
+   截图是缩放后的（1568×1026），实际窗口坐标可能是 1702×1114。
+5. **PowerShell 控制台中文乱码**是显示问题，文件本身正常。判断内容用 ead 工具
+   或 [IO.File]::ReadAllText(..., UTF8)。
+6. **git 历史不能带大文件**：dist-backend/、uild-backend/、	emp/ 已在 .gitignore。
+   历史曾因 457MB exe 膨胀到 2.9GB，用 ilter-branch 清理过。
+
+### 剩余待办
+
+见 §3。其中 #3（_MEI 残留根治）是有明确失败记录的，重试前先读那条记录。
