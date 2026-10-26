@@ -17,8 +17,16 @@ const aiIdx = computed(() => {
 })
 
 function rebuild() {
-  queue.value = (props.state?.groups ?? []).filter((g) => g.needs_pk)
-  pos.value = 0
+  // 刷新后要停在"当前这一组"，不能无脑回队首——否则「跳过」会被任何一次
+  // 操作后的 refresh 打回第 0 组，跳过的组又冒出来。
+  const next = (props.state?.groups ?? []).filter((g) => g.needs_pk)
+  const curId = queue.value[pos.value]?.id
+  queue.value = next
+  const keep = curId == null ? -1 : next.findIndex((g) => g.id === curId)
+  pos.value = keep >= 0
+    ? keep
+    : Math.min(Math.max(pos.value, 0), Math.max(next.length - 1, 0))
+  selDraw()
 }
 watch(() => props.state, rebuild)
 

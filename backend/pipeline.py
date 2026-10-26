@@ -262,8 +262,11 @@ def score_candidates(photos: list[dict], state_dir: Path, settings: dict,
         progress(n, n * 2, "加载审美模型（首次约 20 秒）…")
     images = []
     for ph in todo:
+        # thumb_view 形如 /thumbs/<stem>_<ext>/view.jpg，已含 thumbs 段，
+        # 相对 state_dir 直接解析（再拼一层 thumbs 会命中不存在的路径，
+        # 导致每张都退回原始 RAW 重解码）
         view = Path(ph["thumb_view"].lstrip("/"))
-        cached = state_dir / "thumbs" / view
+        cached = state_dir / view
         images.append(load_preview(str(cached) if cached.exists() else ph["path"]))
     for ph, s in zip(todo, aesthetic.score_batch(images)):
         ph["aesthetic"] = s

@@ -30,9 +30,12 @@ if os.environ.get("JURYMATE_DEBUG"):
 log = logging.getLogger("cullmate")
 
 # 前端静态目录仅源码模式存在（浏览器访问）；PyInstaller 打包模式下
-# 前端由 Tauri webview 提供，Flask 只承担 API
-_FRONTEND = Path(__file__).resolve().parent.parent / "frontend"
-app = Flask(__name__, static_folder=str(_FRONTEND) if _FRONTEND.exists() else None,
+# 前端由 Tauri webview 提供，Flask 只承担 API。
+# 前端产物在 dist/（vite build 输出），不是 cullmate 的 frontend/。
+_FRONTEND = Path(__file__).resolve().parent.parent / "dist"
+if not (_FRONTEND / "index.html").exists():
+    _FRONTEND = None
+app = Flask(__name__, static_folder=str(_FRONTEND) if _FRONTEND else None,
             static_url_path="")
 
 # CORS：Tauri webview 的 origin（http://tauri.localhost）与 sidecar（127.0.0.1）
@@ -411,21 +414,35 @@ def models_progress():
 
 @app.route("/api/export_csv", methods=["POST"])
 def export_csv():
-    """胜出清单 CSV（utf-8-sig，Excel 直开；衔接调色流程的选片输入）。"""
+    """胜出清单 CSV（utf-8-sig，Excel 直开；衔接调色流程的选片输入）。
+
+    口径必须是 photos 里 status=="winner" 的每一张，不能按组取 g["winner"]：
+    "全要"只给成员打 manual_winner 不改组胜者，人工召回也只改照片状态，
+    按组出行会把这两类胜出片整批漏掉（与胜出页显示数量对不上）。
+    """
     if not STATE["photos"]:
         return jsonify({"ok": False, "error": "还没有扫描结果"}), 400
     folder = Path(STATE["folder"])
-    rows = []
+    # 照片 → 所属组（按 members 全局索引反查）
+    group_of: dict[str, dict] = {}
     for g in STATE["groups"]:
-        w = STATE["photos"][g["winner"]] if 0 <= g["winner"] < len(STATE["photos"]) else None
-        if not w:
+        for i in g["members"]:
+            if 0 <= i < len(STATE["photos"]):
+                group_of[STATE["photos"][i]["path"]] = g
+    rows = []
+    for ph in STATE["photos"]:
+        if ph.get("status") != "winner":
             continue
+        g = group_of.get(ph["path"])
         rows.append({
-            "文件名": w["name"], "路径": w["path"], "审美分": w.get("aesthetic"),
-            "综合分": w.get("score"), "组内张数": len(g["members"]),
-            "是否人工确认": bool(w.get("manual_winner")), "落选原因": "/".join(w["reject_reasons"]),
-            "宽度": w["width"], "高度": w["height"], "拍摄时间": w["mtime_str"],
+            "文件名": ph["name"], "路径": ph["path"], "审美分": ph.get("aesthetic"),
+            "综合分": ph.get("score"),
+            "组内张数": len(g["members"]) if g else 1,
+            "是否人工确认": bool(ph.get("manual_winner")),
+            "落选原因": "/".join(ph.get("reject_reasons") or []),
+            "宽度": ph["width"], "高度": ph["height"], "拍摄时间": ph["mtime_str"],
         })
+    rows.sort(key=lambda r: r["文件名"])
     out = folder / "winners_report.csv"
     import csv as _csv
     with out.open("w", newline="", encoding="utf-8-sig") as fh:

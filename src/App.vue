@@ -31,6 +31,9 @@ async function doUpdate() {
   }
 }
 window.addEventListener('keydown', (e) => {
+  // 输入框里打字不能触发检查更新（路径含 u 的目录很常见）
+  const tag = (document.activeElement as HTMLElement)?.tagName
+  if (tag === 'INPUT' || tag === 'TEXTAREA') return
   if (e.key === 'u' || e.key === 'U') checkUpdate(false)
 })
 import HomeView from './views/HomeView.vue'

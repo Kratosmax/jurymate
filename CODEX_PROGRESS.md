@@ -19,10 +19,11 @@ Python 解释器：项目无独立 venv，复用姊妹仓库 `../cullmate/.venv/
 ## 2. 当前快照（最后核验 2026-10-26）
 
 - 版本：0.1.0（版本源 `src-tauri/tauri.conf.json`）
-- 分支：master；基线提交：`5f38f52`（HANDOFF 移出仓库，改用本文件）
+- 分支：master；基线提交：`20ea7b1`（CODEX_PROGRESS 重建）
 - remote：未配置（GitHub 仓库未创建，未发布）
-- 当前工作：装机实测完成；CORS preflight 修复、状态源修复、质量整改已提交；
-  工作树干净
+- 当前工作：本轮修 7 处缺陷（CSV 漏片 / 缩略图缓存路径 / 模型下载产物 /
+  u 键守卫 / 决策页跳过回弹 / 更新器配置残留 / Flask 静态目录），
+  另清掉误入库的 `__pycache__`；工作树含本轮未提交改动
 - 线上状态：未核验（无线上 Release）
 - **待用户**：重装最新 NSIS 包并复测「开始整理」全流程（CORS 修复的最终验证）；
   提供 2-3 张正面人像含闭眼样本（闭眼阈值真数据校准）
@@ -33,9 +34,14 @@ Python 解释器：项目无独立 venv，复用姊妹仓库 `../cullmate/.venv/
 2. 【待用户】正面人像含闭眼样本 → EAR 阈值真数据校准
 3. NSIS /S 静默安装挂起（UI 模式正常）——待 NSIS /LOG 深挖
 4. 启动脚本更名（现名 `启动_cullmate.bat` 为历史遗留）+ venv 引导说明
-5. P1：胜出清单联动 LightCraft 调色（CSV 已有，缺导入自动化）；
+5. 发布前必办：`tauri.conf.json` 的 updater endpoint 仍是 `YOUR_GH` 占位，
+   GitHub 仓库建立后必须替换，否则「检查更新」永远失败
+6. debug 后端（`jury-backend-debug.exe`）未随包分发，`bundle.resources`
+   只映射正式版；lib.rs 已做"debug 缺失回退正式版"，若要真正用 debug
+   模式需补资源映射
+7. P1：胜出清单联动 LightCraft 调色（CSV 已有，缺导入自动化）；
    recall_stats 阈值自校准；千张并行（信号/评分多进程）
-6. P2：EXIF 相机水印；ArcFace 同人归组
+8. P2：EXIF 相机水印；ArcFace 同人归组
 
 没有其他已授权未完成事项；上述之外等待用户需求，不自行扩大范围。
 
@@ -54,7 +60,7 @@ Python 解释器：项目无独立 venv，复用姊妹仓库 `../cullmate/.venv/
 | API 客户端（全站唯一 fetch 出口） | `src/api.ts` |
 | Rust 壳（sidecar 生命周期 + updater） | `src-tauri/src/lib.rs` |
 | 回归测试 | `selftest.py`（18 项）、`verify_eyes.py`（闭眼 4 正例） |
-| 风格模板（四家族 + 已确认预设） | `styles/`（位于 cullmate 仓库同名结构） |
+| 风格模板（四家族 + 已确认预设） | `styles/`——**不在本仓库**，属 cullmate 侧资产，路径待核 |
 
 ## 5. 不得破坏的约束
 

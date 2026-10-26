@@ -59,9 +59,13 @@ Python 后端（sidecar）：
 
 ```bash
 cd backend
-pip install -r ../requirements.txt   # 需要 Python 3.11
+# 依赖清单在姊妹仓库 cullmate（本仓库不重复维护）
+pip install -r ../../cullmate/requirements.txt   # 需要 Python 3.11
 python app.py --port 5090 --no-browser
 ```
+
+> 直接跑 `backend/app.py` 时，若仓库根有 `dist/`（`npm run build` 产物），
+> 浏览器访问 <http://127.0.0.1:5090> 即可看到界面；没有 `dist/` 时 Flask 只提供 API。
 
 打包发布：
 

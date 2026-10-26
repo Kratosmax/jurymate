@@ -19,20 +19,32 @@ fn backend_alive() -> bool {
 /// sidecar 选择：settings.json 的 debug=true → 带*控制台的 debug 版
 /// （用户需求：正式版无控制台，debug 模式在设置里开启）；默认无控制台版。
 fn backend_exe(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
-    let debug = debug_enabled(app);
-    let name = if debug { "jury-backend-debug.exe" } else { "jury-backend.exe" };
+    // debug 版只是可选的调试辅助：安装包里只保证正式版存在，
+    // 因此按 [debug, 正式] 的顺序找，debug 缺失时静默回退到正式版。
+    let names: &[&str] = if debug_enabled(app) {
+        &["jury-backend-debug.exe", "jury-backend.exe"]
+    } else {
+        &["jury-backend.exe"]
+    };
     if let Ok(d) = app.path().resource_dir() {
-        let p = d.join(format!("dist-backend/{}", name));
-        if p.exists() {
-            return Some(p);
+        for name in names {
+            let p = d.join(format!("dist-backend/{}", name));
+            if p.exists() {
+                return Some(p);
+            }
         }
     }
-    let dev = std::env::current_dir()
-        .ok()?
-        .ancestors()
-        .map(|d| d.join(format!("dist-backend/{}", name)))
-        .find(|p| p.exists())?;
-    Some(dev)
+    for name in names {
+        let found = std::env::current_dir()
+            .ok()?
+            .ancestors()
+            .map(|d| d.join(format!("dist-backend/{}", name)))
+            .find(|p| p.exists());
+        if found.is_some() {
+            return found;
+        }
+    }
+    None
 }
 
 /// debug 开关持久化在 %LOCALAPPDATA%/JuryMate/settings.json

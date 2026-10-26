@@ -81,6 +81,7 @@ MODELS = [
         "url": ("https://storage.googleapis.com/mediapipe-models/face_landmarker/"
                 "face_landmarker/float16/1/face_landmarker.task"),
         "mode": "manual",
+        "unpack": "file",
     },
     {
         "id": "buffalo_l",
@@ -89,15 +90,21 @@ MODELS = [
         "path": Path.home() / ".cache" / "pic_selecter" / "insightface" / "models" / "buffalo_l",
         "url": "https://github.com/deepinsight/insightface/releases/download/models/buffalo_l.zip",
         "mode": "manual",
+        # 产物是 zip：必须解压成目录，insightface 的 storage.download 也是这么做的
+        "unpack": "zip",
     },
     {
         "id": "musiq",
         "name": "MUSIQ 审美评分权重",
         "size_mb": 104,
-        "path": Path.home() / ".cache" / "torch" / "hub" / "pyiqa",
+        # pyiqa 的查找路径是 torch.hub.get_dir()/pyiqa/<url 里的文件名>，
+        # 不是目录本身——这里必须给到 .pth 文件（见 pyiqa/utils/download_util.py）
+        "path": Path.home() / ".cache" / "torch" / "hub" / "pyiqa"
+                / "musiq_koniq_ckpt-e95806b9.pth",
         "url": ("https://hf-mirror.com/chaofengc/IQA-PyTorch-Weights/resolve/main/"
                 "musiq_koniq_ckpt-e95806b9.pth"),
         "mode": "manual",
+        "unpack": "file",
     },
 ]
 
@@ -130,8 +137,7 @@ def detect() -> dict:
         backend, hint = "cpu", "纯 CPU 推理"
     models = []
     for m in MODELS:
-        installed = None if m["mode"] == "auto" else bool(
-            m["path"].exists() and (m["path"].is_file() or any(m["path"].iterdir())))
+        installed = None if m["mode"] == "auto" else _installed(m)
         models.append({"id": m["id"], "name": m["name"], "size_mb": m["size_mb"],
                        "installed": installed, "mode": m["mode"]})
     net = load_net_settings()
@@ -165,21 +171,61 @@ def _download_via_routes(routes, dest: Path, http_proxy: str | None, dl: dict) -
             log.warning("models: 通道 %s 失败: %s", channel, e)
     raise last_err or RuntimeError("所有下载通道均失败")
 
+def _installed(m: dict) -> bool:
+    """安装判据：文件非空 / 目录非空。目录型模型（buffalo_l）不能只判 exists，
+    否则一个下载失败的半截 zip 文件也会被当成"已就绪"。"""
+    p = Path(m["path"])
+    if not p.exists():
+        return False
+    if p.is_file():
+        return p.stat().st_size > 0
+    return any(p.iterdir())
+
+def _unpack_zip(zip_path: Path, dest: Path) -> None:
+    """解压到 dest 目录，按 basename 拍平。
+
+    insightface 的 buffalo_l.zip 是平铺的 5 个 onnx；按 basename 落盘同时
+    兼容带顶层目录的打包方式，也顺手挡掉 zip 内的路径穿越。"""
+    import zipfile
+    dest.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(zip_path) as zf:
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            name = Path(info.filename).name
+            if not name:
+                continue
+            with zf.open(info) as src, (dest / name).open("wb") as out:
+                while True:
+                    chunk = src.read(1 << 16)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+    zip_path.unlink(missing_ok=True)
+
 def download(model_id: str) -> None:
     m = next((m for m in MODELS if m["id"] == model_id), None)
     if not m:
         DL.update(error=f"未知模型 {model_id}")
         return
-    if m["path"].exists():
+    dest = Path(m["path"])
+    if _installed(m):
         DL.update(running=False, done=1, total=1, error=None)
         return
     net = load_net_settings()
     routes = _routes_for(m["url"], net)
-    _download_via_routes(routes, m["path"], net.get("http_proxy"), DL)
+    if m.get("unpack") == "zip":
+        # zip 型（buffalo_l）：先下到同名 .zip，解压成目录后再清理
+        zip_path = dest.parent / (dest.name + ".zip")
+        _download_via_routes(routes, zip_path, net.get("http_proxy"), DL)
+        _unpack_zip(zip_path, dest)
+    else:
+        _download_via_routes(routes, dest, net.get("http_proxy"), DL)
 
-def start_download(model_id: str) -> None:
+def start_download(model_id: str) -> bool:
+    """返回是否真的启动了下载（False = 已有下载在进行）。"""
     if DL["running"]:
-        return
+        return False
     DL.update(running=True, done=0, total=1, id=model_id, error=None)
     def worker():
         try:
@@ -190,6 +236,7 @@ def start_download(model_id: str) -> None:
         finally:
             DL["running"] = False
     threading.Thread(target=worker, daemon=True).start()
+    return True
 
 def progress() -> dict:
     return {k: DL[k] for k in ("running", "done", "total", "id", "error")}
