@@ -109,15 +109,17 @@ CPU 永远兜底。首选 EP 没装时自动降级（N 卡只装了 DML 包仍�
 ## 3. 当前待办
 
 1. 【待用户】正面人像含闭眼样本 → EAR 阈值真数据校准
-2. NSIS /S 静默安装挂起（UI 模式正常）——待 NSIS /LOG 深挖
-3. debug 后端（`jury-backend-debug.exe`）未随包分发，`bundle.resources`
+2. debug 后端（`jury-backend-debug.exe`）未随包分发，`bundle.resources`
    只映射正式版；lib.rs 已做"debug 缺失回退正式版"，若要真正用 debug
    模式需补资源映射
-4. 模型下载入口与库的自动下载并存：insightface/pyiqa 在模型缺失时仍会
+3. 模型下载入口与库的自动下载并存：insightface/pyiqa 在模型缺失时仍会
    自行下载到同一目录，UI 的下载按钮走本仓库下载器（支持镜像/代理）。
    已加 preflight 拦截（缺模型时明确报错），但库自身的自动下载仍在
-5. 自动更新的端到端验证：0.1.1 已发布，待用已安装的 0.1.0 客户端实际升级一次
-   完成闭环。**在真机升级成功前，不得对外声称自动更新已验证**
+4. 更新器只走系统代理，不读应用内「网络设置」的代理。若要让两者统一，
+   需在 Rust 侧用 `UpdaterBuilder::proxy()` 或 `on_before_request` 注入；
+   0.1.2 起已在 README 说明该边界
+5. 0.1.2 之后的版本才能真正自动更新。**0.1.0/0.1.1 → 0.1.2 必须手动装一次**，
+   这是已发布版本的历史遗留，无法通过服务端修复
 6. P1：胜出清单联动 LightCraft 调色（CSV 已有，缺导入自动化）；
    recall_stats 阈值自校准；千张并行（信号/评分多进程）
 7. P2：EXIF 相机水印；ArcFace 同人归组
