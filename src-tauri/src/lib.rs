@@ -47,6 +47,37 @@ fn backend_exe(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
     None
 }
 
+/// 解析当前生效的数据根目录，与 backend/paths.py 的优先级保持一致：
+/// 1. 环境变量 JURYMATE_DATA_DIR
+/// 2. %LOCALAPPDATA%/JuryMate/paths.json 里的 data_root
+/// 3. %LOCALAPPDATA%/JuryMate
+///
+/// 为什么 Rust 也要算：sidecar 是 PyInstaller onefile，启动时把全部依赖
+/// 解压到 %TEMP%\_MEI*（约 1.1GB）。只有在我们 **spawn 它之前** 把 TEMP
+/// 指到数据目录，这个解压才会落在用户指定的位置，而不是系统盘。
+fn data_root() -> std::path::PathBuf {
+    if let Ok(v) = std::env::var("JURYMATE_DATA_DIR") {
+        if !v.trim().is_empty() {
+            return std::path::PathBuf::from(v);
+        }
+    }
+    let base = std::env::var("LOCALAPPDATA")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir());
+    let root = base.join("JuryMate");
+    let conf = root.join("paths.json");
+    if let Ok(s) = std::fs::read_to_string(&conf) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) {
+            if let Some(p) = v.get("data_root").and_then(|x| x.as_str()) {
+                if !p.trim().is_empty() {
+                    return std::path::PathBuf::from(p);
+                }
+            }
+        }
+    }
+    root
+}
+
 /// debug 开关持久化在 %LOCALAPPDATA%/JuryMate/settings.json
 fn debug_enabled(app: &tauri::AppHandle) -> bool {
     let dir = app
@@ -91,11 +122,20 @@ fn spawn_backend(app: &tauri::AppHandle) -> Result<(), String> {
     };
     // 把壳的版本传给 sidecar：打包后的 Python 程序读不到仓库里的
     // tauri.conf.json，没有这一步前端就拿不到后端版本、无法提示不一致。
+    // 数据根下的 tmp，作为 sidecar 的临时目录（见 data_root 的注释）
+    let root = data_root();
+    let tmp = root.join("tmp");
+    let _ = std::fs::create_dir_all(&tmp);
+
     let child = Command::new(&exe)
         .arg("--port")
         .arg(BACKEND_PORT.to_string())
         .arg("--no-browser")
         .env("JURYMATE_VERSION", env!("CARGO_PKG_VERSION"))
+        // 把临时目录钉到数据根下的 tmp：PyInstaller onefile 会在此解压
+        // 约 1.1GB 的运行时，被强杀时不会自删，放系统盘会越积越多。
+        .env("TEMP", &tmp)
+        .env("TMP", &tmp)
         .spawn()
         .map_err(|e| format!("启动后端失败: {}", e))?;
     *BACKEND_CHILD.lock().unwrap() = Some(child);

@@ -38,6 +38,16 @@ async function updaterProxy(): Promise<string | undefined> {
 /** 网络设置变更后清掉缓存，让下次检查更新用新代理。 */
 function invalidateProxy() { cachedProxy = undefined }
 
+// 侧栏「存储位置」：跳到首页并展开对应折叠面板。
+// 面板在首页模型区块里，正常情况下只在模型缺失时显示，
+// 所以需要显式打开，否则用户根本找不到入口。
+// 注意：page 在下方才定义，这里只置标志，由 go() 负责切页。
+const wantPathsPanel = ref(false)
+function openPaths() {
+  wantPathsPanel.value = true
+  go('home')
+}
+
 async function checkUpdate(silent: boolean) {
   try {
     if (!(window as any).__TAURI_INTERNALS__) return   // 浏览器模式无更新器
@@ -157,6 +167,10 @@ onMounted(() => {
           {{ updating ? (updStage || '更新中…') : `升级到 v${updateInfo.version}` }}
         </button>
       </div>
+      <div style="margin-top:6px">
+        <button class="ghost" style="padding:3px 10px;font-size:11px"
+                @click="openPaths">存储位置</button>
+      </div>
       <div style="margin-top:6px;font-size:10px;opacity:.6">v{{ APP_VERSION }}</div>
     </div>
     <div v-if="updating && updStage" class="hintbar" style="margin:10px 16px 0">
@@ -173,7 +187,8 @@ onMounted(() => {
   <div class="main">
     <div class="view-host">
       <HomeView v-show="page === 'home'" :state="S" @go="go" @toast="toast" @refresh="refresh"
-                @netsaved="invalidateProxy" />
+                @netsaved="invalidateProxy" :open-paths="wantPathsPanel"
+                @pathsopened="wantPathsPanel = false" />
       <DecideView v-show="page === 'pk'" :state="S" @done="refresh" @toast="toast" />
       <WinnersView v-show="page === 'winners'" :state="S" @changed="refresh" @toast="toast" />
       <ReviewView v-show="page === 'review'" :state="S" @changed="refresh" @toast="toast" />

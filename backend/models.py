@@ -36,7 +36,12 @@ log = logging.getLogger("jurymate.models")
 
 DL = {"running": False, "done": 0, "total": 1, "id": "", "error": None}
 
-NET_SETTINGS_PATH = paths.data_dir() / "net_settings.json"
+def _net_settings_path() -> Path:
+    """每次重新解析：用户可能在运行中切换了数据根目录。
+
+    不能在模块顶层算成常量——那样切换目录后网络设置仍写回旧位置。
+    """
+    return paths.data_dir() / "net_settings.json"
 
 # 常见 GitHub 加速镜像（仅作可选项呈现；默认不启用，见 use_mirror）
 DEFAULT_GITHUB_MIRRORS = [
@@ -52,7 +57,7 @@ def load_net_settings() -> dict:
     镜像（沿用旧行为，避免升级后突然走直连而卡住）。
     """
     try:
-        s = json.loads(NET_SETTINGS_PATH.read_text(encoding="utf-8"))
+        s = json.loads(_net_settings_path().read_text(encoding="utf-8"))
     except Exception:
         s = {}
     raw_mirrors = s.get("github_mirrors")
@@ -66,8 +71,9 @@ def load_net_settings() -> dict:
     return {"use_mirror": use_mirror, "github_mirrors": mirrors, "http_proxy": proxy}
 
 def save_net_settings(use_mirror: bool, mirrors: list[str], http_proxy: str) -> None:
-    NET_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    NET_SETTINGS_PATH.write_text(json.dumps(
+    p = _net_settings_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(
         {"use_mirror": bool(use_mirror),
          "github_mirrors": [m.rstrip("/") for m in mirrors if str(m).strip()],
          "http_proxy": http_proxy or ""}, ensure_ascii=False, indent=1), encoding="utf-8")

@@ -105,4 +105,10 @@ export const api = {
   netSettingsGet: () => req<{ use_mirror: boolean; github_mirrors: string[]; http_proxy: string | null }>('/api/net/settings'),
   netSettingsSave: (use_mirror: boolean, github_mirrors: string[], http_proxy: string) =>
     req<{ ok: boolean }>('/api/net/settings', { use_mirror, github_mirrors, http_proxy }),
+  pathsGet: () => req<{
+    data_root: string; default_root: string; is_default: boolean; env_override: boolean
+    subdirs: { key: string; label: string; path: string; size: number }[]
+  }>('/api/paths'),
+  pathsSave: (data_root: string) =>
+    req<{ ok: boolean; data_root?: string; error?: string }>('/api/paths', { data_root }),
 }

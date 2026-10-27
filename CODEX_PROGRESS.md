@@ -17,25 +17,40 @@ python verify_eyes.py         # 闭眼正例回归（需样图目录与模型缓
 样图目录：`JURYMATE_TEST_DIR`（selftest，需 9 张 ARW）、
 `JURYMATE_EYE_DIR`（verify_eyes）；未设时取 `<工作区>/temp/jurymate-*`。
 
-## 1.1 数据目录（唯一根）
+## 1.1 数据目录（唯一根，且可自定义）
 
-所有运行时产物都在 **`%LOCALAPPDATA%/JuryMate/`**，由 `backend/paths.py` 统一派生：
+所有运行时产物都由 `backend/paths.py` 统一派生。**根目录可以由用户改**：
+
+优先序（高到低）：
+1. 环境变量 `JURYMATE_DATA_DIR`
+2. `%LOCALAPPDATA%/JuryMate/paths.json` 的 `data_root`（界面「存储位置」写入）
+3. 默认 `%LOCALAPPDATA%/JuryMate`
+
+配置文件本身固定在默认位置——它是"用户选了哪个根"的唯一来源，
+不能跟着一起搬，否则改完就找不到了。
 
 | 子路径 | 内容 |
 |---|---|
 | `logs/backend.log` | 滚动日志（5×2MB） |
-| `net_settings.json` | 网络策略：`use_mirror` / `github_mirrors` / `http_proxy` |
+| `net_settings.json` | 网络策略，**每次按当前根重新解析**（不能存成常量） |
 | `face_landmarker.task` | 闭眼检测模型（3.7MB） |
 | `insightface/models/buffalo_l/` | 人脸检测/识别（340MB，非商业许可，按需下载） |
 | `torch/hub/pyiqa/` | MUSIQ 权重（104MB） |
+| `tmp/` | **PyInstaller 的 `_MEI*` 解压目标**（每次约 1.1GB） |
 | `settings.json` | Rust 侧 debug 开关（`app_config_dir`） |
 
-`paths.py` 导入时强制设 `TORCH_HOME=<数据目录>/torch`，因此 pyiqa 的权重位置
-由它决定——**任何模块都必须先 `import paths` 再 import pyiqa/torch**。
+`paths.py` 导入时：
+- 强制设 `TORCH_HOME=<数据目录>/torch`，所以**任何模块都必须先 `import paths`
+  再 import pyiqa/torch**
+- 仅在 `sys.frozen`（打包版）下把 `TEMP`/`TMP` 指向 `<数据目录>/tmp`；
+  源码直跑时不动开发者环境
 
-照片目录下的会话状态在 **`.jurymate/`**（state.json / thumbs / recall_stats.json），
-用户删掉它 = 重置该目录进度。
+Rust 壳（`lib.rs` 的 `data_root()`）用同样的优先序解析，并在 spawn sidecar
+时注入 `TEMP`——这是关键：PyInstaller 在启动瞬间就解压，只有父进程提前
+设好环境变量才能改变落点。
 
+照片目录下的会话状态在 **`.jurymate/`**（state.json / thumbs / recall_stats）。
+缩略图刻意跟随照片目录而非数据根：搬移照片时缓存一起走，不留孤儿文件。
 ## 1.2 网络策略（全部由用户决定）
 
 `net_settings.json` 三个字段，默认全关：
@@ -108,15 +123,15 @@ CPU 永远兜底。首选 EP 没装时自动降级（N 卡只装了 DML 包仍�
 2. debug 后端（`jury-backend-debug.exe`）未随包分发。已评估后放弃：
    双 exe 会让安装包从 457MB 翻倍到约 914MB，对个人使用不划算；
    需要看后端输出的人直接用源码跑 `backend/app.py` 即可
-3. `%TEMP%\_MEI*` 残留：onefile 每次启动解压约 1.1GB，被强杀时不清理。
-   实测累积 27 个 / 27.45GB 挤爆系统盘（C 盘只剩 0.1GB）。
-   **尝试过的方案失败了**：在 `paths.py` 加启动时 `_cleanup_mei_dirs()`，
-   导致后端起不来（推测误删了自身正在使用的 `_MEIPASS`），已回退。
-   根治方向：改 `--onedir` 打包，或让 Rust 壳在退出时清理；
-   不要用运行中的 Python 进程去猜哪些 `_MEI` 可删
-4. P1：胜出清单联动 LightCraft 调色（CSV 已有，缺导入自动化）；
+3. P1：胜出清单联动 LightCraft 调色（CSV 已有，缺导入自动化）；
    recall_stats 阈值自校准；千张并行（信号/评分多进程）
-5. P2：EXIF 相机水印；ArcFace 同人归组
+4. P2：EXIF 相机水印；ArcFace 同人归组
+
+已解决（不再跟进）：
+- ~~自动更新卡在文件占用~~ → 0.1.5 的 `prepare_update` 解决
+- ~~更新器不读应用内代理~~ → 0.1.3 解决
+- ~~模型库绕过 preflight 自行下载~~ → `a82dc06` 解决
+- ~~`_MEI*` 占满系统盘~~ → 0.1.6 把 TEMP 重定向到数据目录解决
 
 没有其他已授权未完成事项；上述之外等待用户需求，不自行扩大范围。
 ## 4. 关键入口
@@ -165,6 +180,40 @@ CPU 永远兜底。首选 EP 没装时自动降级（N 卡只装了 DML 包仍�
 | 打包 | `npm run tauri build`（需签名环境变量与代理） | NSIS+MSI+updater 签名 |
 | 发布 | 未建立 | GitHub 仓库/Release 流程待建 |
 
+## 6.5 开发环境铁律（防止占满系统盘）
+
+本项目的构建与测试会产生大量临时文件，**必须全部落在项目内**，
+不许写系统盘。历史事故：作者机器上累积了 27 个 `_MEI*` 目录共
+27.45GB，把 C 盘挤到只剩 0.1GB。
+
+三类大头与对应做法：
+
+| 来源 | 单次体积 | 做法 |
+|---|---|---|
+| PyInstaller 运行时解压 `_MEI*` | 约 1.1GB | 构建/测试前把 `C:\Users\11726\AppData\Local\Temp` 指到 `<repo>\temp` |
+| WiX 打 MSI 的中间文件 | 约 3.8GB | 同上（`npm run tauri build` 继承该变量） |
+| 应用内升级下载的安装包 | 457MB/次 | 同上，或用后即删 |
+
+**统一用 `scripts/dev-build.ps1`**，它已把这些变量设好：
+
+```powershell
+pwsh -File scripts/dev-build.ps1              # 完整构建
+pwsh -File scripts/dev-build.ps1 -FrontOnly   # 只构建前端
+pwsh -File scripts/dev-build.ps1 -Clean       # 构建完顺便清理临时文件
+```
+
+手工构建时至少要：
+
+```powershell
+C:\Users\11726\AppData\Local\Temp = "F:\git\jurymate\temp"; C:\Users\11726\AppData\Local\Temp = C:\Users\11726\AppData\Local\Temp
+```
+
+其它注意：
+
+- `temp/` 已在 .gitignore，可以放心往里写
+- 每次验证完顺手清 `_MEI*`，不要等积起来再处理
+- 用户侧已由代码解决：Rust 壳启动 sidecar 时把 `TEMP` 注入为
+  数据根下的 `tmp`，所以最终用户的 `_MEI*` 不会再落在系统盘
 ## 7. 协作约定
 
 - 自然语言一律中文；回复言简意赅；证据优先（结论附可复现命令与落盘路径）

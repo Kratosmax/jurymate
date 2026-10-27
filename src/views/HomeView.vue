@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api, type State } from '../api'
 
-const props = defineProps<{ state: State | null }>()
-const emit = defineEmits<{ go: [p: 'pk' | 'winners' | 'review']; toast: [m: string]; refresh: []; netsaved: [] }>()
+const props = defineProps<{ state: State | null; openPaths?: boolean }>()
+const emit = defineEmits<{ go: [p: 'pk' | 'winners' | 'review']; toast: [m: string]; refresh: []; netsaved: []; pathsopened: [] }>()
 
 const folder = ref('')
 const scanning = ref(false)
@@ -86,6 +86,44 @@ const errMsg = ref('')
 const errHint = ref('')
 const showModels = ref(false)
 const APP_VERSION = __APP_VERSION__
+
+// 存储位置：数据根可自定义（模型/缓存/日志/临时文件都跟着走）
+const pathsInfo = ref<{
+  data_root: string; default_root: string; is_default: boolean; env_override: boolean
+  subdirs: { key: string; label: string; path: string; size: number }[]
+} | null>(null)
+const dataRoot = ref('')
+const pathsSaving = ref(false)
+function formatSize(b: number): string {
+  if (!b) return '0'
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(0)} KB`
+  if (b < 1024 * 1024 * 1024) return `${(b / 1048576).toFixed(0)} MB`
+  return `${(b / 1073741824).toFixed(2)} GB`
+}
+async function loadPaths() {
+  try {
+    const p = await api.pathsGet()
+    pathsInfo.value = p
+    // 输入框只在用户没动过时回填，避免把正在编辑的内容冲掉
+    if (!dataRoot.value) dataRoot.value = p.is_default ? '' : p.data_root
+  } catch {}
+}
+async function savePaths() {
+  pathsSaving.value = true
+  try {
+    const r = await api.pathsSave(dataRoot.value.trim())
+    if (r.ok) {
+      emit('toast', '存储位置已更新，重启程序后生效')
+      await loadPaths()
+    } else {
+      emit('toast', r.error || '切换失败')
+    }
+  } catch (e) {
+    emit('toast', `切换失败：${e}`)
+  } finally {
+    pathsSaving.value = false
+  }
+}
 // sidecar 版本与界面版本不一致时提示：本地构建复用旧 exe 会导致数据形状错配
 const verMismatch = computed(() => {
   const v = sys.value?.version
@@ -100,7 +138,23 @@ async function checkSys() {
     useMirror.value = !!sys.value?.net?.use_mirror
   } catch {}
 }
-onMounted(checkSys)
+onMounted(() => { checkSys(); loadPaths() })
+
+// 侧栏点「存储位置」时自动展开本面板并滚到可见区——
+// 否则用户点了没反应（面板默认收起，且模型齐全时整个区块都不渲染）
+const pathsDetails = ref<HTMLDetailsElement | null>(null)
+watch(() => props.openPaths, (want) => {
+  if (!want) return
+  showModels.value = true          // 让外层区块渲染出来
+  loadPaths()                      // 重新拉一次：首次挂载时后端可能还没起来
+  nextTick(() => {
+    pathsDetails.value?.setAttribute('open', '')
+    nextTick(() => {
+      pathsDetails.value?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      emit('pathsopened')
+    })
+  })
+})
 async function saveNet() {
   const r = await api.netSettingsSave(
     useMirror.value,
@@ -173,8 +227,11 @@ const etaText = () => {
           下方「模型就绪检查」可直接下载；国内网络建议先开镜像站或填代理。
         </div>
       </div>
-      <div v-if="sys && (showModels || hasMissingModel)" class="hintbar" style="text-align:left">
-        <b>模型就绪检查</b>（{{ sys.backend_hint }}<template v-if="sys.gpu">｜{{ sys.gpu }}</template>）
+      <div v-if="(sys && (showModels || hasMissingModel)) || showModels" class="hintbar" style="text-align:left">
+        <b v-if="sys">模型就绪检查</b><template v-if="sys?.backend_hint">（{{ sys.backend_hint }}<template v-if="sys.gpu">｜{{ sys.gpu }}</template>）</template>
+        <div v-if="!sys" style="margin-top:6px;color:var(--dim);font-size:12px">
+          后端状态读取中…（不影响下面的存储位置设置）
+        </div>
         <div v-for="m in models" :key="m.id" style="display:flex;align-items:center;gap:10px;margin-top:6px">
           <span style="flex:1">{{ m.name }} · {{ m.size_mb }}MB</span>
           <span v-if="m.installed === true" style="color:var(--good)">✓ 已就绪</span>
@@ -221,11 +278,51 @@ const etaText = () => {
             </div>
           </div>
         </details>
+
+        <details ref="pathsDetails" style="margin-top:10px">
+          <summary style="cursor:pointer;font-size:12px">存储位置（模型 / 缓存 / 日志 / 临时文件）</summary>
+          <div style="margin-top:8px;font-size:12px">
+            <div style="color:var(--dim);margin-bottom:6px">
+              默认放在系统盘的用户目录。系统盘空间紧张时，可把整个数据目录换到别的盘。
+              模型常驻（人脸约 330MB + 审美约 104MB），换盘后不再占用 C 盘。
+            </div>
+
+            <div v-if="pathsInfo?.env_override" class="hintbar" style="margin:0 0 8px;border-color:var(--warn)">
+              当前由环境变量 <code>JURYMATE_DATA_DIR</code> 指定，界面里的设置不会生效。
+            </div>
+
+            <div style="color:var(--dim);margin-bottom:4px">
+              当前数据目录：<code style="word-break:break-all">{{ pathsInfo?.data_root || '—' }}</code>
+              <span v-if="pathsInfo?.is_default" style="opacity:.7">（默认）</span>
+            </div>
+
+            <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px">
+              <input v-model="dataRoot" type="text" style="flex:1;padding:4px 8px;font-size:12px"
+                     placeholder="D:\JuryMateData（留空=恢复默认）" />
+              <button class="act" style="padding:5px 14px;font-size:12px" :disabled="pathsSaving"
+                      @click="savePaths">{{ pathsSaving ? '切换中…' : '应用' }}</button>
+            </div>
+
+            <div v-if="pathsInfo?.subdirs?.length" style="color:var(--dim)">
+              <div style="margin-bottom:2px">各部分占用：</div>
+              <div v-for="d in pathsInfo.subdirs" :key="d.key"
+                   style="display:flex;justify-content:space-between;gap:10px;padding:2px 0">
+                <span>{{ d.label }}</span>
+                <span>{{ formatSize(d.size) }}</span>
+              </div>
+            </div>
+
+            <div style="font-size:11px;color:var(--dim);margin-top:8px">
+              切换后只影响之后产生的文件；已下载的模型留在旧目录，
+              需要的话手动把整个旧目录内容复制过来，或在首页重新下载。
+              重启程序后生效。
+            </div>
+          </div>
+        </details>
         <div style="font-size:11px;color:var(--dim);margin-top:8px">
           insightface 人脸模型为非商业许可，不随程序分发、由你按需下载。
         </div>
-      </div>
-      <div v-if="state?.photos?.length" class="stat-row">
+      </div>      <div v-if="state?.photos?.length" class="stat-row">
         <div class="stat" style="animation-delay: 0s"><b>{{ state.photos.length }}</b><span>共 {{ state.groups.length }} 组</span></div>
         <div class="stat" style="animation-delay: .05s"><b style="color: var(--good)">{{ state.photos.filter((p: any) => p.status === 'winner').length }}</b><span>暂定胜出</span></div>
         <div class="stat" style="animation-delay: .1s"><b style="color: var(--acc)">{{ state.groups.filter((g: any) => g.needs_pk).length }}</b><span>等你拍板</span></div>

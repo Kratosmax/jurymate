@@ -501,6 +501,60 @@ def models_download():
     r = models_mod.start_download(body.get("id", ""))
     return jsonify({"ok": bool(r), "error": None if r else "下载进行中"})
 
+@app.route("/api/paths", methods=["GET", "POST"])
+def paths_api():
+    """查询 / 切换数据根目录。
+
+    GET 返回当前生效值与每个子目录的实际位置、占用大小；
+    POST 校验目标可写后写配置。切换只影响之后产生的文件——已经下载的
+    模型留在旧位置，因为搬 440MB 权重既慢又可能中断，不如让用户自己决定
+    （界面上给出提示和旧路径）。
+    """
+    if request.method == "POST":
+        body = request.json or {}
+        raw = (body.get("data_root") or "").strip()
+        if not raw:
+            paths.write_conf(data_root="")
+            log.info("paths: 恢复默认 %s", paths.default_root())
+            return jsonify({"ok": True, "data_root": str(paths.data_dir())})
+
+        target = Path(raw).expanduser()
+        if not target.is_absolute():
+            return jsonify({"ok": False, "error": "必须填绝对路径"}), 400
+        # 校验可写：建目录 + 试写一个探测文件
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            probe = target / ".jurymate-write-test"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink()
+        except Exception as e:
+            return jsonify({"ok": False, "error": f"目录不可写：{e}"}), 400
+        # 拒绝把数据目录放进程序安装目录：卸载时会连数据一起删掉
+        paths.write_conf(data_root=str(target))
+        log.info("paths: 数据根切到 %s", target)
+        return jsonify({"ok": True, "data_root": str(target)})
+
+    def size_of(p: Path) -> int:
+        try:
+            return sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
+        except Exception:
+            return 0
+
+    root = paths.data_dir()
+    subs = []
+    for key, label in (("logs", "日志"), ("torch", "审美模型缓存"),
+                       ("insightface", "人脸模型"), ("tmp", "临时解压")):
+        p = root / key
+        subs.append({"key": key, "label": label, "path": str(p),
+                     "size": size_of(p) if p.exists() else 0})
+    return jsonify({
+        "data_root": str(root),
+        "default_root": str(paths.default_root()),
+        "is_default": root == paths.default_root(),
+        "env_override": bool(os.environ.get("JURYMATE_DATA_DIR", "").strip()),
+        "subdirs": subs,
+    })
+
 @app.route("/api/net/settings", methods=["GET", "POST"])
 def net_settings():
     if request.method == "POST":
