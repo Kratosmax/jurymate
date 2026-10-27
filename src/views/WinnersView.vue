@@ -65,32 +65,38 @@ async function organizeFlow() {
   try {
     const dry = await api.organize(true, paths)
     if (!dry.ok) {
-      actionMsg.value = { kind: 'err', text: '归档失败', detail: dry.error }
+      actionMsg.value = { kind: 'err', text: '归类失败', detail: dry.error }
       return
     }
-    // dry-run 返回 moved 可能为 0：照片已经归位（幂等），这不是错误，
-    // 要如实说"已全部在目标文件夹"，而不是让用户以为功能没反应。
-    if (!dry.moved) {
+    const parts = [
+      `winners ${dry.winners} 组`,
+    ]
+    if (dry.rejects_skipped) parts.push(`落选 ${dry.rejects_skipped} 张不复制（在「复查」页管理）`)
+    if (dry.skipped_same) parts.push(`${dry.skipped_same} 个文件已存在且内容一致，跳过`)
+    if (dry.skipped_conflict) parts.push(`${dry.skipped_conflict} 组同名但内容不同，未覆盖`)
+    if (dry.pending_kept) parts.push(`未决策 ${dry.pending_kept} 张不动`)
+
+    // 没有需要复制的东西：如实说明为什么，而不是让用户以为按钮没反应
+    if (!dry.copied) {
       actionMsg.value = {
-        kind: 'warn',
-        text: '所有照片都已在目标文件夹里，无需移动',
-        detail: `winners ${dry.winners} 组 · rejects ${dry.rejects} 组 · 冲突跳过 ${dry.skipped_conflict} 个`
-          + (dry.pending_kept ? ` · 未决策 ${dry.pending_kept} 张保持不动` : ''),
+        kind: dry.skipped_conflict ? 'warn' : 'ok',
+        text: dry.skipped_conflict
+          ? '没有复制：目标里已有同名但内容不同的文件'
+          : '无需复制：这些照片都已在目标文件夹里，且内容一致',
+        detail: parts.join(' · ')
+          + (dry.conflicts?.length ? ` · 例：${dry.conflicts.slice(0, 3).join('、')}` : ''),
       }
       return
     }
 
-    // 不用 window.confirm：Tauri 的 webview 对它的支持不可靠，
-    // 之前点了没弹框也没动作，等于按钮失效。改为页面内二次确认。
     if (!confirmMove.value) {
       confirmMove.value = true
       actionMsg.value = {
         kind: 'warn',
-        text: `将移动 ${dry.moved} 个文件`,
-        detail: `winners ${dry.winners} 组 · rejects ${dry.rejects} 组`
-          + (dry.pending_kept ? ` · 未决策 ${dry.pending_kept} 张不动` : '')
+        text: `将复制 ${dry.copied} 个文件`,
+        detail: parts.join(' · ')
           + (paths ? ` · 仅处理勾选的 ${paths.length} 张` : ' · 处理全部照片')
-          + ' —— 再点一次「确认归类」执行',
+          + ' —— 原文件保留在原位，再点一次「确认归类」执行',
       }
       return
     }
@@ -98,18 +104,21 @@ async function organizeFlow() {
     const r = await api.organize(false, paths)
     confirmMove.value = false
     if (r.ok) {
+      const d = [`winners ${r.winners} 组`]
+      if (r.rejects_skipped) d.push(`落选 ${r.rejects_skipped} 张不复制`)
+      if (r.skipped_same) d.push(`已存在跳过 ${r.skipped_same} 个`)
+      if (r.skipped_conflict) d.push(`内容不同未覆盖 ${r.skipped_conflict} 组`)
       actionMsg.value = {
-        kind: 'ok',
-        text: `已归类 ${r.moved ?? 0} 个文件`,
-        detail: `winners ${r.winners} 组 · rejects ${r.rejects} 组`
-          + (r.skipped_conflict ? ` · 重名跳过 ${r.skipped_conflict} 个` : ''),
+        kind: r.skipped_conflict ? 'warn' : 'ok',
+        text: `已复制 ${r.copied ?? 0} 个文件`,
+        detail: d.join(' · ') + ' —— 原文件仍在原目录',
       }
       emit('changed')
     } else {
-      actionMsg.value = { kind: 'err', text: '归档失败', detail: r.error }
+      actionMsg.value = { kind: 'err', text: '归类失败', detail: r.error }
     }
   } catch (e) {
-    actionMsg.value = { kind: 'err', text: '归档出错', detail: String(e) }
+    actionMsg.value = { kind: 'err', text: '归类出错', detail: String(e) }
   } finally {
     busy.value = ''
   }
@@ -161,18 +170,19 @@ async function openCsv(path: string) {
       <button class="ghost" :class="{ act: selectMode }" @click="selectMode = !selectMode; selectNone()">
         {{ selectMode ? '退出勾选' : '勾选部分归类' }}
       </button>
-      <button class="danger" :disabled="!!busy" @click="organizeFlow">
+      <button class="act" :disabled="!!busy" @click="organizeFlow">
         {{ busy === 'org' ? '处理中…' : (confirmMove ? '确认归类' : (selectMode && selected.size ? `归类选中的 ${selected.size} 张` : '归类全部照片')) }}
       </button>
       <button v-if="confirmMove" class="ghost" @click="confirmMove = false; actionMsg = null">取消</button>
     </div>
 
-    <!-- 归类是什么，必须写清楚：这是**真的移动磁盘文件**，不可逆 -->
+    <!-- 归类的语义必须写清楚：是**复制**，原文件不动 -->
     <div class="hintbar" style="font-size:12px;line-height:1.7">
-      <b>「归类」会真的移动文件</b>：把胜出的照片移进
-      <code>{{ props.state?.folder }}\winners\</code>，落选的移进 <code>rejects\</code>。
-      连拍的 JPG 与同名 .xmp 会跟着一起走。不开「勾选部分归类」时处理全部照片；
-      开了就只处理你勾选的那些。移动后原位置就没有了，请确认后再执行。
+      <b>「归类」是把胜出照片复制一份到 <code>winners\</code>，原文件保留在原位</b>。
+      连拍的 JPG 与同名 .xmp 会跟着一起复制。
+      落选照片<b>不会</b>复制到任何地方——它们在「复查」页里管理，那里就是落选列表。
+      重复点不会产生副本：目标已有同名文件时比对内容，<b>相同就跳过</b>，
+      不同则不覆盖并提示。不开「勾选部分归类」时处理全部胜出照片。
     </div>
 
     <div v-if="selectMode" class="hintbar" style="display:flex;gap:10px;align-items:center;font-size:12px">
@@ -205,7 +215,7 @@ async function openCsv(path: string) {
                  :badge="p.manual_winner ? '人工召回' : ''"
                  :note="'MUSIQ 无参考审美模型的 5 分制映射（人类平均审美参考分，AI 拿它排序）'"
                  @click="lightbox = p.thumb_view">
-        <template #cap-extra>
+        <template #footer>
           <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px">
             <input v-if="selectMode" type="checkbox" style="width:auto;margin:0"
                    :checked="selected.has(p.path)" @click.stop="toggleSel(p.path)" />

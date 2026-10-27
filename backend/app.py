@@ -525,33 +525,39 @@ def _undo_apply():
     save_state()
     return jsonify({"ok": True})
 
-@app.route("/api/organize", methods=["POST"])
-def organize():
-    """把 winner 移入 winners/、reject 移入 rejects/。
+def _same_content(a: Path, b: Path) -> bool:
+    """内容一致判定：先比大小（快），大小相同再比 SHA-256。"""
+    try:
+        if a.stat().st_size != b.stat().st_size:
+            return False
+        import hashlib
 
-    数据安全规则：
-    - pending（未决策）一律不动；
-    - RAW+JPG 双拍与同 stem .xmp sidecar 整体随迁（stem 大小写不敏感，
-      任意 RAW 扩展名——V1.0 只认大写 .ARW 是 bug）；
-    - 目标重名不覆盖（跳过并计数）；
-    - dry=true 只返回计划不移动（测试用）。
+        def _h(p: Path) -> str:
+            h = hashlib.sha256()
+            with p.open("rb") as fh:
+                for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                    h.update(chunk)
+            return h.hexdigest()
 
-    可选 paths：只处理这些照片（用户在界面上勾选的子集）。
-    不传则处理全部——这是默认行为，也是老版本的语义。
+        return _h(a) == _h(b)
+    except OSError as e:
+        log.warning("organize: 比对失败，按不同处理 %s: %s", a, e)
+        return False
+
+
+def _organize_core(folder: Path, status_by_path: dict, dry: bool,
+                   only_set=None) -> dict:
+    """归类核心：把照片按胜负**复制**到 winners/ 与 rejects/。
+
+    抽成纯函数是为了能脱离 Flask/全局 STATE 直接测判重逻辑
+    （见 temp/test_organize_copy.py）。status_by_path: {绝对路径: "winner"|"reject"}。
     """
-    folder = Path(STATE["folder"])
-    if not STATE["photos"]:
-        return jsonify({"ok": False, "error": "还没有扫描结果"}), 400
-    body = request.json or {}
-    dry = bool(body.get("dry"))
-    only = body.get("paths")
-    only_set = set(only) if isinstance(only, list) and only else None
-    plan = {"winners": 0, "rejects": 0, "pending_kept": 0, "skipped_conflict": 0}
-    moves = []  # (src, dst)
+    plan = {"winners": 0, "pending_kept": 0, "rejects_skipped": 0,
+            "skipped_same": 0, "skipped_conflict": 0}
+    jobs = []
+    conflicts = []
 
-    # 先把目录内容索引一次，供下面查找同 stem 的 sidecar / JPG 双拍。
-    # 原来是在每张照片的循环里调 folder.iterdir()，1000 张就要扫 1000 遍
-    # 整个目录（O(n²)），千张规模下会卡到界面假死。
+    # 目录索引一次，避免 O(n²)（1000 张时会在循环里扫 1000 遍整个目录）
     by_stem: dict[str, list[Path]] = {}
     try:
         for f in folder.iterdir():
@@ -560,18 +566,23 @@ def organize():
     except OSError as e:
         log.warning("organize: 列目录失败，按无 sidecar 处理：%s", e)
 
-    for ph in STATE["photos"]:
-        if only_set is not None and ph["path"] not in only_set:
-            continue          # 用户只勾选了部分照片
-        if ph["status"] == "pending":
+    for src_str, st in status_by_path.items():
+        if only_set is not None and src_str not in only_set:
+            continue
+        if st == "pending":
             plan["pending_kept"] += 1
             continue
-        dest = "winners" if ph["status"] == "winner" else "rejects"
-        src = Path(ph["path"])
+        # 只复制胜出照片。落选的不落盘——「复查」页就是落选的归宿，
+        # 再复制一份到 rejects/ 只是白占空间（用户明确要求）。
+        if st != "winner":
+            plan["rejects_skipped"] = plan.get("rejects_skipped", 0) + 1
+            continue
+        dest = "winners"
+        src = Path(src_str)
         if not src.exists():
             continue
         if src.parent.name in ("winners", "rejects"):
-            continue  # 已归位（幂等）
+            continue
         ddir = folder / dest
         stem_u = src.stem.upper()
         group_files = {src}
@@ -581,35 +592,74 @@ def organize():
             if (f.name.upper() == stem_u + ".XMP"
                     or f.suffix.lower() in (".jpg", ".jpeg")):
                 group_files.add(f)
-        for c in ph.get("companions", []):
-            cp = Path(c)
-            if cp.exists() and cp.parent == folder:
-                group_files.add(cp)
-        ddir.mkdir(exist_ok=True)
-        ok = True
+
+        # 整组判定：任一文件"同名但内容不同"则整组不复制，
+        # 避免 RAW 是新的、JPG 是旧的这种半新半旧状态
+        conflict = False
         for f in group_files:
-            if (ddir / f.name).exists():
-                plan["skipped_conflict"] += 1
-                ok = False
-        if ok:
-            plan[dest] += 1
-            moves.extend((f, ddir / f.name) for f in group_files)
+            t = ddir / f.name
+            if t.exists() and not _same_content(f, t):
+                conflict = True
+                break
+        if conflict:
+            plan["skipped_conflict"] += 1
+            conflicts.append(src.name)
+            continue
+
+        todo = [(f, ddir / f.name) for f in group_files if not (ddir / f.name).exists()]
+        already = len(group_files) - len(todo)
+        if already:
+            plan["skipped_same"] += already
+        if not todo:
+            continue
+        plan["winners"] += 1
+        jobs.extend(todo)
+
     if not dry:
-        for f, t in moves:
-            shutil.move(str(f), str(t))
-        by_name = {Path(p["path"]).name: p for p in STATE["photos"]}
-        for f, t in moves:
-            ph = by_name.get(f.name)
-            if ph is None or Path(ph["path"]) != f:
-                continue
-            ph["path"] = str(t)
-            ddir = t.parent
-            ph["companions"] = [str(ddir / Path(c).name)
-                                if Path(c).parent == folder and (ddir / Path(c).name).exists()
-                                else c
-                                for c in ph.get("companions", [])]
+        for _, t in jobs:
+            t.parent.mkdir(parents=True, exist_ok=True)
+        for f, t in jobs:
+            shutil.copy2(str(f), str(t))   # copy2 保留 mtime
+    plan["copied"] = len(jobs)
+    plan["conflicts"] = conflicts[:20]
+    return plan
+
+
+@app.route("/api/organize", methods=["POST"])
+def organize():
+    """把 winner **复制**到 winners/、reject **复制**到 rejects/。
+
+    为什么是复制而不是移动：移动会把照片从原目录搬走，用户下次扫描根目录
+    就找不到它们了；而且移走是不可逆的，选错了很难恢复。复制则原文件
+    始终在原位，代价只是多占一份空间。
+
+    重复检测（用户明确要求"检查是否已经复制过、文件是否一致"）：
+    - 目标已有同名文件时，比对**内容 SHA-256**：
+      · 内容相同 → 计为"已存在，跳过"，不算冲突、不重复写盘
+      · 内容不同 → 计为"同名但内容不同"，**不覆盖**，记进冲突列表
+    - 这样反复点归类是幂等的，不会堆出一堆副本。
+
+    其他数据安全规则：
+    - pending（未决策）一律不动；
+    - RAW+JPG 双拍与同 stem .xmp sidecar 整组一起复制（stem 大小写不敏感，
+      任意 RAW 扩展名——V1.0 只认大写 .ARW 是 bug）；
+    - dry=true 只返回计划不写盘。
+
+    可选 paths：只处理这些照片（用户在界面上勾选的子集）。
+    不传则处理全部。
+    """
+    folder = Path(STATE["folder"])
+    if not STATE["photos"]:
+        return jsonify({"ok": False, "error": "还没有扫描结果"}), 400
+    body = request.json or {}
+    dry = bool(body.get("dry"))
+    only = body.get("paths")
+    only_set = set(only) if isinstance(only, list) and only else None
+
+    status_by_path = {p["path"]: p["status"] for p in STATE["photos"]}
+    plan = _organize_core(folder, status_by_path, dry, only_set)
+    if not dry and plan["copied"]:
         save_state()
-    plan["moved"] = len(moves)
     return jsonify({"ok": True, **plan})
 
 @app.route("/api/system/detect")

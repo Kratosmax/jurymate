@@ -131,10 +131,14 @@ export const api = {
   setStatus: (path: string, status: 'winner' | 'reject') =>
     req<{ ok: boolean; status?: string; error?: string }>('/api/set_status', { path, status }),
   undo: () => req<{ ok: boolean; error?: string }>('/api/undo', {}),
-  // 归类支持只移动指定照片（不传 paths = 全部按当前胜负）
+  // 归类 = 把 winner 复制到 winners/（原文件不动，落选不落盘）
+  // 重复点不会堆副本：按内容 SHA-256 判重
   organize: (dry: boolean, paths?: string[]) =>
-    req<{ ok: boolean; moved?: number; winners?: number; rejects?: number; pending_kept?: number; skipped_conflict?: number; error?: string }>(
-      '/api/organize', { dry, paths }),
+    req<{
+      ok: boolean; copied?: number; winners?: number; rejects_skipped?: number
+      pending_kept?: number; skipped_same?: number; skipped_conflict?: number
+      conflicts?: string[]; error?: string
+    }>('/api/organize', { dry, paths }),
   exportCsv: () => req<{ ok: boolean; path?: string; rows?: number; error?: string }>('/api/export_csv', {}),
   openFolder: (sub = '', select = '') =>
     req<{ ok: boolean; selected?: string; error?: string }>('/api/open_folder', { sub, select }),

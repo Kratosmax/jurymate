@@ -34,5 +34,10 @@ function scoreColorOf(s: number | null) {
         <template v-if="photo.width"> · {{ photo.width }}×{{ photo.height }}</template>
       </span>
     </div>
+    <!-- 卡片底部的额外操作区（勾选框、单张按钮等）。
+         调用方通过 #footer 传入；不用 slot 的话子内容会被直接丢弃。 -->
+    <div v-if="$slots.footer" class="cap-extra" @click.stop>
+      <slot name="footer" />
+    </div>
   </div>
 </template>
