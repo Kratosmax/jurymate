@@ -170,12 +170,26 @@ onMounted(async () => {
           </div>
         </div>
         <div style="display:flex;gap:8px">
-          <button class="ghost" :disabled="props.updater?.updating"
-                  @click="props.updater?.checkUpdate(false)">检查更新</button>
+          <button class="ghost" :disabled="props.updater?.updating || props.updater?.updChecking"
+                  @click="props.updater?.checkUpdate(false)">
+            {{ props.updater?.updChecking ? '检查中…' : '检查更新' }}
+          </button>
           <button v-if="props.updater?.updateInfo" class="act"
                   :disabled="props.updater?.updating" @click="props.updater?.doUpdate()">
             {{ props.updater?.updating ? (props.updater?.updStage || '更新中…') : `升级到 v${props.updater.updateInfo.version}` }}
           </button>
+        </div>
+      </div>
+
+      <!-- 检查结果常驻显示：只发 toast 的话会被随后的刷新冲掉，
+           用户看到的就是"点了没反应" -->
+      <div v-if="props.updater?.updCheck" class="hintbar" style="margin-top:10px"
+           :style="{ borderColor: props.updater.updCheck.kind === 'ok' ? 'var(--acc)'
+                        : props.updater.updCheck.kind === 'err' ? 'var(--bad)' : 'var(--line)' }">
+        <div>{{ props.updater.updCheck.text }}</div>
+        <div v-if="props.updater.updCheck.detail" class="dim"
+             style="margin-top:4px;font-size:12px;word-break:break-all">
+          {{ props.updater.updCheck.detail }}
         </div>
       </div>
 

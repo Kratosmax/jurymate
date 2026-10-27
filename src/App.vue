@@ -16,6 +16,15 @@ const updTotal = ref(0)
 const updPct = computed(() =>
   updTotal.value ? Math.min(99, Math.round((updGot.value / updTotal.value) * 100)) : 0)
 
+// 检查更新的结果放进常驻状态，而不是只发一条 2.6 秒的 toast。
+// toast 会被随后的状态刷新冲掉，用户看到的就是"点了按钮没反应"——
+// 归档、导出都因为同样的原因被误报成"功能坏了"，这里是第三处。
+// 必须定义在 updaterApi 之前（它要引用）。
+const updCheck = ref<{
+  kind: 'ok' | 'none' | 'err'; text: string; detail?: string
+} | null>(null)
+const updChecking = ref(false)
+
 // 设置页要用到这些状态与动作。用 reactive 包一层：ref 塞进普通对象传给
 // 子组件不会自动解包，子组件读到的是 Ref 对象而不是值。
 const updaterApi = reactive({
@@ -26,6 +35,8 @@ const updaterApi = reactive({
   get updGot() { return updGot.value },
   get updTotal() { return updTotal.value },
   get updPct() { return updPct.value },
+  get updCheck() { return updCheck.value },
+  get updChecking() { return updChecking.value },
   checkUpdate: (silent: boolean) => checkUpdate(silent),
   doUpdate: () => doUpdate(),
 })
@@ -53,14 +64,30 @@ async function updaterProxy(): Promise<string | undefined> {
 function invalidateProxy() { cachedProxy = undefined }
 
 
+// 检查更新的结果放进常驻状态（定义见文件上方 updCheck）
 async function checkUpdate(silent: boolean) {
+  if (!silent) { updChecking.value = true; updCheck.value = null }
   try {
     if (!(window as any).__TAURI_INTERNALS__) return   // 浏览器模式无更新器
-    const u: Update | null = await check({ proxy: await updaterProxy() })
-    if (u) updateInfo.value = { version: u.version, body: u.body ?? '' }
-    else if (!silent) toast(`已是最新版本（v${APP_VERSION}）`)
-  } catch {
-    if (!silent) toast('检查更新失败。若网络受限，请在「网络设置」填代理，或开启系统代理。')
+    const proxy = await updaterProxy()
+    const u: Update | null = await check({ proxy })
+    if (u) {
+      updateInfo.value = { version: u.version, body: u.body ?? '' }
+      updCheck.value = { kind: 'ok', text: `发现新版本 v${u.version}` }
+    } else {
+      updCheck.value = { kind: 'none', text: `已是最新版本（v${APP_VERSION}）` }
+    }
+  } catch (e) {
+    const via = await updaterProxy()
+    updCheck.value = {
+      kind: 'err',
+      text: '检查更新失败',
+      // 把"用没用代理"写出来：系统代理关着又没填代理时，直连 GitHub
+      // 必然超时，这时候说"网络受限"比只说"失败"有用得多。
+      detail: `${e}`.slice(0, 120) + (via ? `（已用代理 ${via}）` : '（未配置代理，走系统代理/直连）'),
+    }
+  } finally {
+    if (!silent) updChecking.value = false
   }
 }
 async function doUpdate() {
