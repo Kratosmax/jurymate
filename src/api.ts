@@ -117,8 +117,12 @@ export const api = {
     const s = await req<State>('/api/state')
     return { ...s, photos: s.photos.map(absT) }
   },
-  start: (folder: string, incremental: boolean) =>
-    req<{ ok: boolean; error?: string }>('/api/start', { folder, incremental }),
+  start: (folder: string, mode: 'full' | 'incremental' | 'reset' = 'full') =>
+    req<{ ok: boolean; error?: string }>('/api/start', {
+      folder,
+      incremental: mode === 'incremental',
+      reset: mode === 'reset',
+    }),
   progress: () => req<{ running: boolean; done: number; total: number; stage: string; error: string | null; error_kind?: string | null; error_hint?: string }>('/api/progress'),
   pk: (group_id: number, action: 'pick' | 'all' | 'none', pick?: number) =>
     req<{ ok: boolean; error?: string }>('/api/pk', { group_id, action, pick }),
@@ -130,13 +134,24 @@ export const api = {
   systemDetect: () => req<any>('/api/system/detect'),
   modelsDownload: (id: string) => req<{ ok: boolean; error?: string | null }>('/api/models/download', { id }),
   modelsProgress: () => req<{ running: boolean; done: number; total: number; id: string; error: string | null }>('/api/models/progress'),
-  netSettingsGet: () => req<{ use_mirror: boolean; github_mirrors: string[]; http_proxy: string | null }>('/api/net/settings'),
-  netSettingsSave: (use_mirror: boolean, github_mirrors: string[], http_proxy: string) =>
-    req<{ ok: boolean }>('/api/net/settings', { use_mirror, github_mirrors, http_proxy }),
+  netSettingsGet: () => req<{
+    use_mirror: boolean; github_mirrors: string[]; http_proxy: string | null
+    order?: 'mirror_first' | 'direct_first'
+  }>('/api/net/settings'),
+  netSettingsSave: (use_mirror: boolean, github_mirrors: string[], http_proxy: string,
+                    order: 'mirror_first' | 'direct_first' = 'mirror_first') =>
+    req<{ ok: boolean }>('/api/net/settings', { use_mirror, github_mirrors, http_proxy, order }),
   pathsGet: () => req<{
     data_root: string; default_root: string; is_default: boolean; env_override: boolean
     subdirs: { key: string; label: string; path: string; size: number }[]
   }>('/api/paths'),
   pathsSave: (data_root: string) =>
-    req<{ ok: boolean; data_root?: string; error?: string }>('/api/paths', { data_root }),
+    req<{ ok: boolean; data_root?: string; started?: boolean; error?: string }>(
+      '/api/paths', { data_root }),
+  pathsProgress: () => req<{
+    running: boolean; done: number; total: number; current: string
+    migrated: { key: string; label: string }[]
+    skipped: { key: string; label: string; reason: string }[]
+    error: string | null; target: string; old: string
+  }>('/api/paths/progress'),
 }

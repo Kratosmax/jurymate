@@ -59,13 +59,27 @@ jobs:
       - name: Build frontend
         run: npm run build
 
+      # 缓存 pip 下载与安装结果：后端依赖约 2GB，不缓存时每次都要重下，
+      # 这是 CI 慢的主因。key 绑到 requirements.txt，改了依赖才失效。
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~\AppData\Local\pip\Cache
+            ~\AppData\Local\pip\cache
+          key: pip-${{ runner.os }}-py311-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            pip-${{ runner.os }}-py311-
+
       - name: Install backend deps
         shell: bash
         run: |
           python -m pip install --upgrade pip
-          # insightface 会拉 CPU 版 onnxruntime，装完再换 DirectML 版
+          # insightface 会拉 CPU 版 onnxruntime，装完再换 DirectML 版。
+          # 去掉 --force-reinstall：它会把 onnxruntime 及其依赖整个重装一遍，
+          # 在 CI 上是分钟级浪费；--no-deps 只换这一个包即可。
           pip install -r requirements.txt
-          pip install --force-reinstall onnxruntime-directml
+          pip install --no-deps --force-reinstall onnxruntime-directml
           pip install pyinstaller
 
       # sidecar 必须是打包前就位的资源，否则 Tauri bundle 找不到。
@@ -78,16 +92,55 @@ jobs:
       # 不打包 debug 版（会多 457MB，安装包翻倍）；需要看后端输出的人
       # 直接用源码跑 backend/app.py 就行。
       - name: Build sidecar
-        shell: bash
+        shell: pwsh
         run: |
-          mkdir -p build-backend dist-backend
-          cd build-backend
-          pyinstaller --name jury-backend --onefile ../backend/app.py \
-            --distpath ../dist-backend --workpath ./work --specpath . \
-            --noconfirm --clean --windowed
-          cd ..
-          ls -lh dist-backend/
-          test -f dist-backend/jury-backend.exe
+          New-Item -ItemType Directory -Force -Path build-backend, dist-backend | Out-Null
+          Push-Location build-backend
+          try {
+            python -m PyInstaller --name jury-backend --onefile ../backend/app.py `
+              --distpath ../dist-backend --workpath ./work --specpath . `
+              --noconfirm --clean --windowed `
+              --hidden-import=mediapipe.tasks.python `
+              --hidden-import=mediapipe.tasks.python.vision `
+              --hidden-import=mediapipe.tasks.python.vision.face_landmarker `
+              --hidden-import=mediapipe.tasks.c `
+              --hidden-import=insightface.app `
+              --hidden-import=insightface.utils.face_align `
+              --hidden-import=pyiqa.archs.musiq_arch `
+              --hidden-import=onnxruntime.capi.onnxruntime_pybind11_state `
+              --collect-binaries=mediapipe `
+              --collect-data=mediapipe
+            if ($LASTEXITCODE -ne 0) { throw "PyInstaller 失败" }
+          } finally { Pop-Location }
+
+          $exe = "dist-backend/jury-backend.exe"
+          if (-not (Test-Path $exe)) { throw "产物缺失: $exe" }
+
+          # 防回归：函数内延迟导入的模块必须真的打进去了。
+          # 0.1.9 本地验收时就是漏了 mediapipe.tasks.c，装好一点整理就崩，
+          # 而源码跑完全正常——这类问题必须在 CI 拦住。
+          $log = Get-Content build-backend/build/jury-backend/warn-jury-backend.txt -Raw -EA SilentlyContinue
+          foreach ($m in @('mediapipe', 'insightface', 'pyiqa')) {
+            if ($log -match "missing module named $m") {
+              throw "PyInstaller 报告缺少模块 $m，检查 --hidden-import 是否漏了"
+            }
+          }
+
+          # 防回归：确认是 GUI 子系统（Subsystem=2），否则用户会看到控制台黑窗。
+          # 0.1.8 就是这么漏的——本地 spec 是 console=True，CI 是 --windowed，
+          # 两条构建路径不一致，用户装到了带控制台的版本。
+          $fs = [IO.File]::OpenRead((Resolve-Path $exe))
+          $br = New-Object IO.BinaryReader($fs)
+          $fs.Position = 0x3C
+          $peOff = $br.ReadInt32()
+          $fs.Position = $peOff + 0x5C
+          $subsystem = $br.ReadUInt16()
+          $br.Close(); $fs.Close()
+          if ($subsystem -ne 2) {
+            throw "sidecar 不是 GUI 子系统（Subsystem=$subsystem，应为 2），会弹控制台"
+          }
+          Write-Host "Subsystem=2 校验通过（无控制台窗口）"
+          Get-ChildItem dist-backend | Format-Table Name, Length
 
       - name: Build Tauri bundles
         shell: bash

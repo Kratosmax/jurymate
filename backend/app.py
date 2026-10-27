@@ -106,6 +106,13 @@ def _cors_headers(resp):
     return resp
 
 STATE = {"photos": [], "groups": [], "folder": None, "settings": {}, "undo_stack": []}
+
+# 迁移任务的实时状态（前端轮询 /api/paths/progress）。
+# 必须定义在使用它的函数之前——Python 在调用时才解析全局名，
+# 但放在文件末尾会让可读性变差且容易被后续编辑打乱顺序。
+MIGRATE = {"running": False, "done": 0, "total": 0, "current": "",
+           "migrated": [], "skipped": [], "error": None,
+           "target": "", "old": ""}
 TASK = {"running": False, "done": 0, "total": 0, "stage": "", "error": None,
         "error_kind": None, "error_hint": ""}
 _LOCK = threading.Lock()          # 启动任务互斥
@@ -212,6 +219,10 @@ def start():
     body = request.json or {}
     folder = body.get("folder", "").strip()
     incremental = bool(body.get("incremental"))
+    # reset=True：无视磁盘缓存，丢掉全部人工决策与状态，从零重建。
+    # 用户第一次打开某个目录却看到"人工召回"标记时就是靠这个清掉——
+    # .jurymate/state.json 是跨会话的，之前点过召回就会一直留着。
+    reset = bool(body.get("reset"))
     if not folder or not Path(folder).is_dir():
         return jsonify({"ok": False, "error": "目录不存在"}), 400
     with _LOCK:
@@ -226,11 +237,25 @@ def start():
         try:
             def progress(done, total, name):
                 TASK.update(done=done, total=total, stage=name)
+            if reset:
+                # 强制重新整理：清内存态 + 删磁盘 state + 删缩略图缓存。
+                # 三者必须一起清：只清内存会让 load_state 又把旧的读回来；
+                # 不删缩略图则仍会沿用旧图的预览/尺寸。
+                with _SNAPSHOT_LOCK:
+                    STATE.update(photos=[], groups=[], undo_stack=[])
+                sd = Path(folder) / paths.STATE_DIRNAME
+                try:
+                    if sd.exists():
+                        shutil.rmtree(sd)
+                        log.info("reset: 已清除状态目录 %s", sd)
+                except Exception as e:
+                    log.warning("reset: 清理 %s 失败（继续全量重扫）：%s", sd, e)
+                TASK.update(stage="已清除缓存，从零重新整理…")
             # 增量：同目录已有人工决策，只补新图。
             # 磁盘 state 是唯一事实源——用户删掉它 = 明确要重置，内存旧态
             # （含 manual_winner）必须作废、退化为全量重扫。
             # （实测教训：删磁盘缓存后点增量补扫，内存旧态的"人工召回"永远残留）
-            if incremental and STATE["photos"] \
+            if incremental and not reset and STATE["photos"] \
                     and Path(STATE["folder"]).resolve() == Path(folder).resolve():
                 with _SNAPSHOT_LOCK:
                     STATE.update(photos=[], groups=[])
@@ -542,34 +567,98 @@ def paths_api():
 
         # 迁移旧的子目录。tmp 不搬：里面是 PyInstaller 的临时解压产物，
         # 正被当前进程使用，搬它要拖几 GB 且毫无价值。
-        migrated, skipped = [], []
-        if old_root.exists() and old_root != new_root:
-            for key, label in _DATA_SUBDIRS:
-                if key == "tmp":
-                    continue
-                src_dir = old_root / key
-                if not src_dir.exists():
-                    continue
-                dst_dir = new_root / key
-                try:
-                    if dst_dir.exists() and any(dst_dir.iterdir()):
-                        skipped.append({"key": key, "label": label,
-                                        "reason": "目标已有同名非空目录"})
-                        continue
-                    shutil.move(str(src_dir), str(dst_dir))
-                    migrated.append({"key": key, "label": label})
-                except Exception as e:
-                    skipped.append({"key": key, "label": label,
-                                    "reason": str(e)[:120]})
+        #
+        # 为什么放到后台线程：模型加起来几百 MB，shutil.move 跨盘时是"复制+删除"，
+        # 实测十几秒。同步做的话 HTTP 请求一直挂着，前端既没有进度也不知道
+        # 到底结束了没有（用户抱怨过）。这里立刻返回，由进度接口轮询。
+        MIGRATE.update(running=True, done=0, total=0, current="",
+                       migrated=[], skipped=[], error=None,
+                       target=str(new_root), old=str(old_root))
 
-        paths.write_conf(data_root="" if not raw else str(new_root))
-        log.info("paths: %s -> %s (migrated=%d skipped=%d)",
-                 old_root, new_root, len(migrated), len(skipped))
-        return jsonify({"ok": True, "data_root": str(new_root),
-                        "migrated": migrated, "skipped": skipped,
-                        "old_root": str(old_root)})
+        def migrate_worker():
+            try:
+                # 迁移清单 = 子目录 + 数据根下的散落文件。
+                # 踩过的坑：只搬子目录时 face_landmarker.task（单个 3.7MB 文件，
+                # 直接放在数据根下）被漏掉，切换后模型检查立刻报"尚未下载"。
+                items = [(k, lb) for k, lb in _DATA_SUBDIRS
+                         if k != "tmp" and (old_root / k).exists()]
 
+                # 数据根顶层的散落文件（模型、配置等），逐个搬
+                loose = []
+                for f in old_root.iterdir():
+                    if f.is_file() and f.name not in _NO_MIGRATE_FILES:
+                        loose.append(f)
+
+                # 进度基准：子目录字节数 + 散落文件大小
+                sizes = {}
+                for k, _ in items:
+                    try:
+                        sizes[k] = _dir_size(old_root / k) or 1
+                    except Exception:
+                        sizes[k] = 1
+                for f in loose:
+                    try:
+                        sizes[f.name] = f.stat().st_size or 1
+                    except Exception:
+                        sizes[f.name] = 1
+                total_bytes = sum(sizes.values()) or 1
+                MIGRATE.update(total=total_bytes)
+
+                done_bytes = 0
+                for k, lb in items:
+                    MIGRATE.update(current=f"正在迁移 {lb}…")
+                    try:
+                        how = _migrate_path(old_root / k, new_root / k)
+                        MIGRATE["migrated"].append(
+                            {"key": k, "label": lb, "how": how})
+                    except Exception as e:
+                        MIGRATE["skipped"].append(
+                            {"key": k, "label": lb, "reason": str(e)[:120]})
+                    done_bytes += sizes.get(k, 1)
+                    MIGRATE.update(done=done_bytes)
+
+                for f in loose:
+                    MIGRATE.update(current=f"正在迁移 {f.name}…")
+                    try:
+                        how = _migrate_path(f, new_root / f.name)
+                        MIGRATE["migrated"].append(
+                            {"key": f.name, "label": f.name, "how": how})
+                    except Exception as e:
+                        MIGRATE["skipped"].append(
+                            {"key": f.name, "label": f.name, "reason": str(e)[:120]})
+                    done_bytes += sizes.get(f.name, 1)
+                    MIGRATE.update(done=done_bytes)
+
+                # 全部搬完才落配置：中途失败时旧目录还是权威位置，
+                # 不能出现"配置指向新目录、但数据还在旧目录"的割裂状态。
+                if old_root != new_root:
+                    paths.write_conf(data_root="" if not raw else str(new_root))
+                MIGRATE.update(current="迁移完成", done=total_bytes)
+                log.info("paths: %s -> %s (migrated=%s skipped=%s)",
+                         old_root, new_root,
+                         [m["key"] for m in MIGRATE["migrated"]],
+                         [s["key"] for s in MIGRATE["skipped"]])
+            except Exception as e:
+                MIGRATE.update(error=f"{e}")
+                log.exception("paths: 迁移失败")
+            finally:
+                MIGRATE.update(running=False)
+
+        threading.Thread(target=migrate_worker, daemon=True).start()
+        return jsonify({"ok": True, "data_root": str(new_root), "started": True})
+
+    # GET：返回当前生效值、子目录位置与占用
     return jsonify(_paths_payload())
+
+
+@app.route("/api/paths/progress")
+def paths_progress():
+    """迁移进度：前端轮询它来画进度条。"""
+    m = dict(MIGRATE)
+    m["migrated"] = list(MIGRATE["migrated"])
+    m["skipped"] = list(MIGRATE["skipped"])
+    return jsonify(m)
+
 
 
 # 数据根下的子目录：(键, 中文名)。tmp 是进程临时区，不参与迁移。
@@ -580,12 +669,50 @@ _DATA_SUBDIRS = (
     ("tmp", "临时解压"),
 )
 
+# 这些文件不迁移：
+# - paths.json 必须留在默认位置，否则改完目录就再也找不到配置文件
+# - 写探测文件是临时的，正常不会残留
+_NO_MIGRATE_FILES = {"paths.json", ".jurymate-write-test"}
+
 
 def _dir_size(p: Path) -> int:
     try:
         return sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
     except Exception:
         return 0
+
+
+def _migrate_path(src: Path, dst: Path) -> str:
+    """把 src 搬到 dst，返回 'moved' / 'copied'；不可搬时抛异常。
+
+    为什么要区分 move 与 copy：Windows 上被进程打开的文件（正在写的日志、
+    当前进程加载的模型）不允许 rename/delete，而 shutil.move 会整个失败。
+    此时退化为"复制"——数据到了新位置，程序能继续用；旧文件留给用户删。
+    直接报错跳过则会留下"新目录缺模型"的坏状态。
+    """
+    if src.is_file():
+        if dst.exists():
+            raise FileExistsError("目标已存在同名文件")
+        try:
+            shutil.move(str(src), str(dst))
+            return "moved"
+        except (PermissionError, OSError):
+            shutil.copy2(str(src), str(dst))
+            return "copied"
+
+    if dst.exists() and any(dst.iterdir()):
+        raise FileExistsError("目标已有同名非空目录")
+    try:
+        shutil.move(str(src), str(dst))
+        return "moved"
+    except (PermissionError, OSError):
+        # 目录里有被占用的文件：整体复制，再尝试删源（删不掉就留着）
+        shutil.copytree(str(src), str(dst), dirs_exist_ok=True)
+        try:
+            shutil.rmtree(str(src))
+        except Exception:
+            pass
+        return "copied"
 
 
 def _paths_payload() -> dict:
@@ -609,12 +736,13 @@ def net_settings():
         use_mirror = bool(body.get("use_mirror"))
         mirrors = body.get("github_mirrors", [])
         proxy = body.get("http_proxy", "")
-        models_mod.save_net_settings(use_mirror, mirrors, proxy)
+        order = body.get("order", "mirror_first")
+        models_mod.save_net_settings(use_mirror, mirrors, proxy, order)
         # 立刻生效：库自身的自动下载读环境变量
         models_mod._apply_proxy_env((proxy or "").strip() or None)
-        log.info("net: use_mirror=%s mirrors=%d proxy=%s",
+        log.info("net: use_mirror=%s mirrors=%d proxy=%s order=%s",
                  use_mirror, len([m for m in mirrors if str(m).strip()]),
-                 "set" if (proxy or "").strip() else "none")
+                 "set" if (proxy or "").strip() else "none", order)
         return jsonify({"ok": True})
     return jsonify(models_mod.load_net_settings())
 

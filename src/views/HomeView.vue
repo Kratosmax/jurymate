@@ -12,6 +12,8 @@ const total = ref(0)
 const stage = ref('')
 let timer: ReturnType<typeof setInterval> | undefined
 const t0 = ref(0)
+// 「强制重新整理」的二次确认（不用 window.confirm：Tauri webview 支持不可靠）
+const confirmReset = ref<boolean>(false)
 
 // localStorage 可能被写坏（进程在写入中被杀）或存了非数组值。
 // 这行在 setup 顶层同步执行，一旦抛错整个组件不会渲染（表现为首页白屏、
@@ -34,11 +36,17 @@ function remember(d: string) {
   } catch { /* 隐私模式或配额满：不影响主流程 */ }
 }
 
-async function start(incremental = false) {
+// mode: 'full' 首次/全量 | 'incremental' 只补新图 | 'reset' 清缓存从零重建
+async function start(mode: 'full' | 'incremental' | 'reset' = 'full') {
   const f = folder.value.trim()
   if (!f) return
+  if (mode === 'reset' && !confirmReset.value) {
+    confirmReset.value = true
+    return
+  }
+  confirmReset.value = false
   remember(f)
-  const r = await api.start(f, incremental)
+  const r = await api.start(f, mode)
   if (!r.ok) return
   scanning.value = true
   t0.value = Date.now()
@@ -127,13 +135,25 @@ const etaText = () => {
         <input v-model="folder" type="text" style="width: 440px"
                placeholder="照片文件夹绝对路径，如 C:\Users\you\Pictures\xx" list="dirs" />
         <datalist id="dirs"><option v-for="d in recent" :key="d" :value="d" /></datalist>
-        <button class="act" :disabled="scanning" @click="start(false)">开始整理</button>
+        <button class="act" :disabled="scanning" @click="start('full')">开始整理</button>
         <button v-if="state?.photos?.length" class="ghost" :disabled="scanning"
-                title="目录里有新图时只补新图，已有人工决策保留" @click="start(true)">增量补扫</button>
+                title="目录里有新图时只补新图，已有人工决策保留" @click="start('incremental')">增量补扫</button>
+        <button v-if="state?.photos?.length" class="ghost" :disabled="scanning"
+                :class="{ danger: confirmReset }"
+                title="清除该目录的缓存与全部人工决策，从零重新整理"
+                @click="start('reset')">
+          {{ confirmReset ? '确认清除并重来' : '强制重新整理' }}
+        </button>
+        <button v-if="confirmReset" class="ghost" @click="confirmReset = false">取消</button>
+      </div>
+      <div v-if="confirmReset" class="hintbar" style="text-align:left;border-color:var(--warn)">
+        将删除 <code>{{ folder }}\.jurymate\</code> 里的扫描结果、缩略图缓存与全部
+        <b>人工召回 / 「全要」</b> 标记，然后从零重新整理。
+        已归档到 winners/ 与 rejects/ 的照片不会被动。
       </div>
       <div style="margin-top: 10px; font-size: 12px; color: var(--dim)">
         最近：<template v-for="(d, i) in recent.slice(0, 3)" :key="d"><a href="#"
-                style="color: var(--acc)" @click.prevent="folder = d; start(false)">{{ d }}</a><span v-if="i < Math.min(recent.length, 3) - 1"> · </span></template>
+                style="color: var(--acc)" @click.prevent="folder = d; start('full')">{{ d }}</a><span v-if="i < Math.min(recent.length, 3) - 1"> · </span></template>
       </div>
       <div v-if="scanning" style="text-align: left">
         <div class="prog"><div :style="{ width: frac() * 100 + '%' }" /></div>

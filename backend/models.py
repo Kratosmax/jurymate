@@ -52,8 +52,15 @@ DEFAULT_GITHUB_MIRRORS = [
 def load_net_settings() -> dict:
     """读网络设置。
 
-    默认全关：不启用镜像、不设代理，直连源站。
-    旧配置里若已有 github_mirrors 而无 use_mirror 字段，视为用户曾开启过
+    统一的网络层：代理、镜像站、优先级是一套配置，模型下载与更新检查共用，
+    不再各管一段。字段：
+
+      http_proxy      HTTP/SOCKS 代理，如 http://127.0.0.1:10808
+      github_mirrors  GitHub 加速前缀，按数组顺序尝试
+      use_mirror      是否启用镜像
+      order           尝试顺序：'mirror_first' 或 'direct_first'
+
+    兼容旧配置：只有 github_mirrors 而没有 use_mirror 时，视为用户曾开启
     镜像（沿用旧行为，避免升级后突然走直连而卡住）。
     """
     try:
@@ -68,29 +75,46 @@ def load_net_settings() -> dict:
     if not isinstance(use_mirror, bool):
         use_mirror = False
     proxy = (s.get("http_proxy") or "").strip() or None
-    return {"use_mirror": use_mirror, "github_mirrors": mirrors, "http_proxy": proxy}
+    order = s.get("order")
+    if order not in ("mirror_first", "direct_first"):
+        order = "mirror_first"
+    return {"use_mirror": use_mirror, "github_mirrors": mirrors,
+            "http_proxy": proxy, "order": order}
 
-def save_net_settings(use_mirror: bool, mirrors: list[str], http_proxy: str) -> None:
+
+def save_net_settings(use_mirror: bool, mirrors: list[str], http_proxy: str,
+                      order: str = "mirror_first") -> None:
+    if order not in ("mirror_first", "direct_first"):
+        order = "mirror_first"
     p = _net_settings_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(
         {"use_mirror": bool(use_mirror),
          "github_mirrors": [m.rstrip("/") for m in mirrors if str(m).strip()],
-         "http_proxy": http_proxy or ""}, ensure_ascii=False, indent=1), encoding="utf-8")
+         "http_proxy": http_proxy or "",
+         "order": order}, ensure_ascii=False, indent=1), encoding="utf-8")
+
 
 def _routes_for(url: str, net: dict) -> list[tuple[str, str]]:
     """为 URL 生成按序尝试的下载路由列表 [(url, 通道名)]。
 
     仅当用户开启镜像站、且 URL 属 GitHub 域时才插入镜像前缀；
     其余一律直连（代理由 opener 统一处理，不影响路由本身）。
+
+    order 决定"镜像优先"还是"直连优先"：国内直连 GitHub 常常等到超时
+    才回落，反过来（镜像优先、失败回直连）通常更快；但从镜像下载可能
+    拿到过期或不完整的文件，所以两种顺序都要留给用户选。
     """
     is_github = "github.com" in url or "raw.githubusercontent.com" in url
-    routes = []
+    mirrored = []
     if net.get("use_mirror") and is_github:
         for m in net.get("github_mirrors", []):
-            routes.append((f"{m}/{url}", f"镜像 {m}"))
-    routes.append((url, "直连"))
-    return routes
+            mirrored.append((f"{m}/{url}", f"镜像 {m}"))
+    direct = (url, "直连")
+    if net.get("order") == "direct_first":
+        return [direct] + mirrored
+    return mirrored + [direct]
+
 
 def _opener(http_proxy: str | None):
     if http_proxy:

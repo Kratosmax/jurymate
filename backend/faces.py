@@ -161,7 +161,18 @@ def analyze(img_bgr: np.ndarray, settings: dict | None = None) -> list[dict]:
     h, w = img.shape[:2]
     # 模型不可用必须冒泡（ModelUnavailable）；单张图的推理异常才算可降级，
     # 但也要留日志，不能像以前那样静默变成"无人脸"。
-    det_faces = _get().get(img)
+    #
+    # insightface 的 landmark 阶段有个已知崩溃：检测框能出、但 5 点关键点
+    # 估计失败时内部会把 None 传进 estimate_affine_matrix_3d23d，抛
+    # AttributeError: 'NoneType' object has no attribute 'shape'。
+    # 这出现在纯风景/严重虚化的照片上，属于单图可降级，不该让整批任务失败。
+    try:
+        det_faces = _get().get(img)
+    except AttributeError as e:
+        if "NoneType" not in str(e):
+            raise
+        log.warning("faces: 关键点估计失败，本图按无人脸处理（%s）", e)
+        det_faces = []
 
     out = []
     def push(bbox, ear_l=None, ear_r=None, source="insightface"):
