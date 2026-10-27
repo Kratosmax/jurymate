@@ -86,16 +86,18 @@ CPU 永远兜底。首选 EP 没装时自动降级（N 卡只装了 DML 包仍�
 `models.detect()` 只转述 `hardware` 的结论，不再自己判断——避免出现
 "界面提示推荐 X、实际跑 Y"的分裂。
 
-## 2. 当前快照（最后核验 2026-10-27 11:xx）
+## 2. 当前快照（最后核验 2026-10-27 14:xx）
 
-- 版本：**0.1.5**（版本源 `src-tauri/tauri.conf.json`；`package.json`、
+- 版本：**0.1.7**（版本源 `src-tauri/tauri.conf.json`；`package.json`、
   `Cargo.toml`、`Cargo.lock` 必须同步，CI 会校验与标签一致）
 - 分支：master；remote：`origin` → https://github.com/Kratosmax/jurymate
-- 仓库：**PUBLIC**，标签已到 `v0.1.5`
-- 线上最新：v0.1.5（0.1.4 及以前均已发布）
-- **自动更新已端到端验证通过**（0.1.3 → 0.1.4，真机、无弹窗、版本正确）。
-  0.1.0–0.1.4 升级都会卡在文件占用，**必须手动安装 0.1.5 一次**；
-  0.1.5 之后的版本可应用内直接升级
+- 仓库：**PUBLIC**，标签已到 `v0.1.7`
+- 线上最新：v0.1.7
+- **自动更新已端到端验证通过**（0.1.3 → 0.1.4 真机升级，无弹窗、版本正确）。
+  0.1.0–0.1.4 升级会卡在文件占用，**必须手动安装 0.1.5+ 一次**；
+  0.1.5 及以后可应用内直接升级
+- **存储位置全面可自定义**（0.1.6/0.1.7）：模型、缓存、日志、临时解压、
+  程序设置全部跟随数据根；`_MEI*` 不再落系统盘
 - **待用户**：提供 2-3 张正面人像含闭眼样本（闭眼阈值真数据校准）
 ### 发布方式
 
@@ -236,25 +238,24 @@ C:\Users\11726\AppData\Local\Temp = "F:\git\jurymate\temp"; C:\Users\11726\AppDa
 - 与 Git/源码/用户指示冲突时，以更新的可验证证据为准并修正本文件
 
 
-## 9. 会话交接（2026-10-27 11:xx）
+## 9. 会话交接（2026-10-27 14:xx）
 
-### 本会话最有价值的发现：更新器时序
+### 本会话最重要的一条：更新器时序
 
-自动更新卡在文件占用，根因是**执行顺序**，不是权限也不是 NSIS 问题：
+自动更新卡在文件占用，根因是**执行顺序**：
 
-`
+```
 updater.downloadAndInstall()
   1. on_before_exit 钩子
   2. 启动安装器 (spawn)      <-- 此刻应用还活着，sidecar 也活着
   3. 应用退出 RunEvent::Exit  <-- 清理挂在这里已经太晚
-`
+```
 
-0.1.2 把 `kill_backend` 挂在 `RunEvent::Exit`，0.1.5 改为前端在
-`downloadAndInstall` **之前**调 `prepare_update` 命令（杀进程 + 轮询
-确认 exe 可独占打开）。这是唯一在正确时机生效的位置。
+证据：`tauri-plugin-updater-2.14.0/src/updater.rs` 第 1017–1019 行
+先调 `on_before_exit()` 再 spawn 安装器。
 
-证据来源：`tauri-plugin-updater-2.14.0/src/updater.rs` 第 1017–1019 行
-先调 `on_before_exit()` 再拼安装器参数并 spawn。
+所以清理必须由前端在 `downloadAndInstall` **之前**主动触发
+（0.1.5 的 `prepare_update` 命令）。这是唯一在正确时机生效的位置。
 
 ### 已完成
 
@@ -264,8 +265,19 @@ updater.downloadAndInstall()
 | v0.1.2 | 退出时清理 sidecar（时机错，未真正解决） |
 | v0.1.3 | 更新检查接入应用内代理；修复代理缓存污染 |
 | v0.1.4 | 消除启动控制台黑窗；修 `JURYMATE_DEBUG` 失效 |
-| a82dc06 | 禁止 insightface/pyiqa 自行联网下载模型 |
 | v0.1.5 | **prepare_update：自动更新真正跑通** |
+| v0.1.6 | **存储位置全面可自定义**；`_MEI*` 不再占系统盘 |
+| v0.1.7 | 程序设置文件也跟随数据目录 |
+
+### 存储位置实现的三个关键点
+
+1. **优先级**：`JURYMATE_DATA_DIR` > `paths.json` 的 `data_root` > 默认。
+   配置文件本身固定在默认位置，不跟着搬——否则改完就找不到它了。
+2. **Rust 也要解析**：`lib.rs` 的 `data_root()` 用同样优先序，在 spawn
+   sidecar 时注入 `TEMP`。PyInstaller 在启动瞬间就解压，只有父进程提前
+   设好环境变量才能改变落点。
+3. **缩略图例外**：`<照片目录>/.jurymate/thumbs` 刻意不跟随数据根。
+   缩略图与照片一一对应，搬移照片时缓存一起走，不留孤儿文件。
 
 ### 踩过的坑（务必先读）
 
@@ -275,14 +287,14 @@ updater.downloadAndInstall()
    不要从打包参数上下结论。
 2. **本地 `npm run tauri build` 不会重建 sidecar**，且 PyInstaller 见到
    产物存在会跳过，必须先 `Remove-Item dist-backend\jury-backend.exe`。
-3. **`%TEMP%\_MEI*` 会吃光 C 盘**（实测 27 个 / 27.45GB）。频繁重启应用
-   时每隔一段时间清一次。遇到 `ENOSPC` 先看这里。
-4. **Tauri 窗口标题改不动 `document.title`**。前端调试信息要写进页面可见
-   区域（例如侧栏小字），不要用 `document.title`。
+3. **`%TEMP%\_MEI*` 会吃光 C 盘**（实测 27 个 / 27.45GB）。开发时统一用
+   `scripts/dev-build.ps1`（见 §6.5），它把 TEMP 钉到项目内。
+4. **Tauri 窗口标题改不动 `document.title`**。前端调试信息要写进页面
+   可见区域，不要用 `document.title`。
 5. **UIA 点击坐标用 `get_app_state(mode='text')` 的 rect**，别按截图估——
    截图是缩放后的（1568×1026），实际窗口坐标可能是 1702×1114。
 6. **PowerShell 控制台中文乱码**是显示问题，文件本身正常。
 
 ### 剩余待办
 
-见 §3。其中 #3（`_MEI` 残留根治）有明确失败记录，重试前先读那条。
+见 §3。只剩 EAR 阈值校准（需用户提供样本）与 P1/P2 的功能项。
