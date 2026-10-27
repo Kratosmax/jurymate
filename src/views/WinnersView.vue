@@ -1,124 +1,101 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import { api, type State } from '../api'
-import PhotoCard from '../components/PhotoCard.vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { invoke } from '@tauri-apps/api/core'
+import { api, type Photo, type State } from '../api'
 
 const props = defineProps<{ state: State | null }>()
 const emit = defineEmits<{ changed: []; toast: [m: string] }>()
 
 const winners = computed(() => (props.state?.photos ?? []).filter((p) => p.status === 'winner'))
-const lightbox = ref('')
 
-// 归档/导出的结果放在页面里常驻显示。
-// 原来只发一条 2.6 秒的 toast——它会被紧接着的 emit('changed') 重新渲染冲掉，
-// 用户看到的就是"点了没反应"，尽管操作其实成功了。
-const actionMsg = ref<{ kind: 'ok' | 'warn' | 'err'; text: string; detail?: string } | null>(null)
-const busy = ref<'org' | 'csv' | ''>('')
-const confirmMove = ref<boolean>(false)
+// ---- 右键菜单 ----
+// 只做两件事：移回复查、打开文件所在位置。
+// WebView 自带的菜单（共享/打印/复制图像/复制图像链接/另存为/放大）
+// 由 App.vue 的全局 contextmenu 拦截统一禁掉。
+const menu = ref<{ x: number; y: number; photo: Photo } | null>(null)
 
-// 归类范围：默认全部，也可以只处理勾选的照片
-const selected = ref<Set<string>>(new Set())
-const selectMode = ref(false)
-const lastCsv = ref('')
-function toggleSel(p: string) {
-  const s = new Set(selected.value)
-  if (s.has(p)) s.delete(p)
-  else s.add(p)
-  selected.value = s
-}
-function selectAll() {
-  selected.value = new Set(winners.value.map((w) => w.path))
-}
-function selectNone() {
-  selected.value = new Set()
+function groupOf(path: string) {
+  return (props.state?.groups ?? []).find((g) => g.members.some((m) => m.path === path))
 }
 
-// 单张人工指定胜负：用户要能直接说"这张要/不要"，而不是只能接受组内选择
-async function setStatus(path: string, status: 'winner' | 'reject') {
-  const r = await api.setStatus(path, status)
+function onContextMenu(e: MouseEvent, p: Photo) {
+  e.preventDefault()
+  e.stopPropagation()
+  // 菜单宽约 190、高约 90，贴边时往回收，避免出屏
+  const x = Math.min(e.clientX, window.innerWidth - 200)
+  const y = Math.min(e.clientY, window.innerHeight - 100)
+  menu.value = { x, y, photo: p }
+}
+function closeMenu() {
+  menu.value = null
+}
+
+async function moveBackToReview() {
+  const m = menu.value
+  closeMenu()
+  if (!m) return
+  const r = await api.setStatus(m.photo.path, 'reject')
   if (r.ok) {
-    if (status === 'reject') {
-      // 照片会从胜出页消失，必须告诉用户去哪找回，
-      // 否则看起来像"照片丢了"。
-      actionMsg.value = {
-        kind: 'warn',
-        text: '已移到落选',
-        detail: '这张已从胜出页移除。要恢复的话去「复查」页——那里列出所有落选片，点图即可召回。',
-      }
-    } else {
-      actionMsg.value = { kind: 'ok', text: '已设为胜出', detail: path }
-    }
+    emit('toast', `${m.photo.name} 已移回复查`)
     emit('changed')
   } else {
-    actionMsg.value = { kind: 'err', text: '操作失败', detail: r.error }
+    emit('toast', r.error || '操作失败')
   }
 }
 
-function groupOf(path: string) {
-  return props.state?.groups.find((g) => g.members.some((m) => m.path === path))
+async function revealFile() {
+  const m = menu.value
+  closeMenu()
+  if (!m) return
+  try {
+    const how = await invoke<string>('reveal_in_explorer', { path: m.photo.path })
+    // reused = 复用了已打开的窗口，opened = 新开了一个
+    emit('toast', how === 'reused' ? '已在已有窗口定位' : '已打开所在文件夹')
+  } catch (e) {
+    emit('toast', `打开失败：${e}`)
+  }
 }
+
+onMounted(() => {
+  window.addEventListener('click', closeMenu)
+  window.addEventListener('scroll', closeMenu, true)
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('click', closeMenu)
+  window.removeEventListener('scroll', closeMenu, true)
+})
+
+// ---- 归类 / 导出 ----
+const busy = ref<'org' | 'csv' | ''>('')
+const selectMode = ref(false)
+const selected = ref<Set<string>>(new Set())
+const lastCsv = ref('')
+
+function toggleSel(p: string) {
+  const s = new Set(selected.value)
+  s.has(p) ? s.delete(p) : s.add(p)
+  selected.value = s
+}
+function selectAll() { selected.value = new Set(winners.value.map((w) => w.path)) }
+function selectNone() { selected.value = new Set() }
 
 async function organizeFlow() {
   busy.value = 'org'
-  actionMsg.value = null
   const paths = selectMode.value && selected.value.size ? [...selected.value] : undefined
   try {
-    const dry = await api.organize(true, paths)
-    if (!dry.ok) {
-      actionMsg.value = { kind: 'err', text: '归类失败', detail: dry.error }
-      return
-    }
-    const parts = [
-      `winners ${dry.winners} 组`,
-    ]
-    if (dry.rejects_skipped) parts.push(`落选 ${dry.rejects_skipped} 张不复制（在「复查」页管理）`)
-    if (dry.skipped_same) parts.push(`${dry.skipped_same} 个文件已存在且内容一致，跳过`)
-    if (dry.skipped_conflict) parts.push(`${dry.skipped_conflict} 组同名但内容不同，未覆盖`)
-    if (dry.pending_kept) parts.push(`未决策 ${dry.pending_kept} 张不动`)
-
-    // 没有需要复制的东西：如实说明为什么，而不是让用户以为按钮没反应
-    if (!dry.copied) {
-      actionMsg.value = {
-        kind: dry.skipped_conflict ? 'warn' : 'ok',
-        text: dry.skipped_conflict
-          ? '没有复制：目标里已有同名但内容不同的文件'
-          : '无需复制：这些照片都已在目标文件夹里，且内容一致',
-        detail: parts.join(' · ')
-          + (dry.conflicts?.length ? ` · 例：${dry.conflicts.slice(0, 3).join('、')}` : ''),
-      }
-      return
-    }
-
-    if (!confirmMove.value) {
-      confirmMove.value = true
-      actionMsg.value = {
-        kind: 'warn',
-        text: `将复制 ${dry.copied} 个文件`,
-        detail: parts.join(' · ')
-          + (paths ? ` · 仅处理勾选的 ${paths.length} 张` : ' · 处理全部照片')
-          + ' —— 原文件保留在原位，再点一次「确认归类」执行',
-      }
-      return
-    }
-
     const r = await api.organize(false, paths)
-    confirmMove.value = false
     if (r.ok) {
-      const d = [`winners ${r.winners} 组`]
-      if (r.rejects_skipped) d.push(`落选 ${r.rejects_skipped} 张不复制`)
-      if (r.skipped_same) d.push(`已存在跳过 ${r.skipped_same} 个`)
-      if (r.skipped_conflict) d.push(`内容不同未覆盖 ${r.skipped_conflict} 组`)
-      actionMsg.value = {
-        kind: r.skipped_conflict ? 'warn' : 'ok',
-        text: `已复制 ${r.copied ?? 0} 个文件`,
-        detail: d.join(' · ') + ' —— 原文件仍在原目录',
-      }
+      const extra = r.skipped_same ? `，${r.skipped_same} 个已存在跳过` : ''
+      const conflict = r.skipped_conflict ? `，${r.skipped_conflict} 组内容不同未覆盖` : ''
+      emit('toast', r.copied
+        ? `已复制 ${r.copied} 个文件到 winners${extra}${conflict}`
+        : `无需复制：${r.skipped_same} 个文件已是最新${conflict}`)
       emit('changed')
     } else {
-      actionMsg.value = { kind: 'err', text: '归类失败', detail: r.error }
+      emit('toast', r.error || '归类失败')
     }
   } catch (e) {
-    actionMsg.value = { kind: 'err', text: '归类出错', detail: String(e) }
+    emit('toast', `归类出错：${e}`)
   } finally {
     busy.value = ''
   }
@@ -126,114 +103,98 @@ async function organizeFlow() {
 
 async function exportCsv() {
   busy.value = 'csv'
-  actionMsg.value = null
   try {
     const r = await api.exportCsv()
     if (r.ok) {
       lastCsv.value = r.path || ''
-      actionMsg.value = {
-        kind: 'ok',
-        text: `已导出 ${r.rows} 条记录`,
-        detail: r.path,
-      }
+      emit('toast', `已导出 ${r.rows} 条记录`)
+      // 导出后直接帮用户定位到文件（原需求：快速打开路径）
+      const name = (r.path || '').split(/[\\/]/).pop() || ''
+      if (name) await invoke<string>('reveal_in_explorer', { path: r.path }).catch(() => '')
     } else {
-      actionMsg.value = { kind: 'err', text: '导出失败', detail: r.error }
+      emit('toast', r.error || '导出失败')
     }
   } catch (e) {
-    actionMsg.value = { kind: 'err', text: '导出出错', detail: String(e) }
+    emit('toast', `导出出错：${e}`)
   } finally {
     busy.value = ''
   }
 }
 
-async function openFolder() {
+async function openWinnersFolder() {
   await api.openFolder('winners')
-}
-// 导出后直接定位到 CSV：省得用户自己去资源管理器里翻
-async function openCsv(path: string) {
-  const name = path.split(/[\\/]/).pop() || ''
-  await api.openFolder('', name)
 }
 </script>
 
 <template>
   <div class="view" id="p-winners">
-    <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px">
-      <h2 class="pgtitle" style="flex: 1; margin: 0">
+    <div class="toolbar">
+      <h2 class="pgtitle">
         胜出 {{ winners.length }} 张
-        <span style="color: var(--dim); font-size: 12px; font-weight: 400">★ = 5 分制审美参考分（悬停看含义）</span>
+        <span class="subtle" title="MUSIQ 无参考审美模型给出的 5 分制映射，仅作排序参考">★ 审美分</span>
       </h2>
-      <button class="ghost" :disabled="!!busy" @click="exportCsv">
-        {{ busy === 'csv' ? '导出中…' : '导出 CSV 清单' }}
+      <button class="ghost" :disabled="!!busy" @click="exportCsv" title="导出胜出清单，并自动定位到文件">
+        {{ busy === 'csv' ? '导出中…' : '导出 CSV' }}
       </button>
-      <button class="ghost" @click="openFolder">📁 打开结果文件夹</button>
-      <button class="ghost" :class="{ act: selectMode }" @click="selectMode = !selectMode; selectNone()">
-        {{ selectMode ? '退出勾选' : '勾选部分归类' }}
+      <button class="ghost" @click="openWinnersFolder" title="打开 winners 文件夹">📁</button>
+      <button class="ghost" :class="{ act: selectMode }"
+              title="只归类勾选的照片"
+              @click="selectMode = !selectMode; selectNone()">
+        {{ selectMode ? '退出勾选' : '勾选' }}
       </button>
-      <button class="act" :disabled="!!busy" @click="organizeFlow">
-        {{ busy === 'org' ? '处理中…' : (confirmMove ? '确认归类' : (selectMode && selected.size ? `归类选中的 ${selected.size} 张` : '归类全部照片')) }}
+      <button class="act" :disabled="!!busy" @click="organizeFlow"
+              title="把胜出照片复制一份到 winners 文件夹，原文件保留">
+        {{ busy === 'org' ? '处理中…' : (selectMode && selected.size ? `归类 ${selected.size} 张` : '归类') }}
       </button>
-      <button v-if="confirmMove" class="ghost" @click="confirmMove = false; actionMsg = null">取消</button>
     </div>
 
-    <!-- 归类的语义必须写清楚：是**复制**，原文件不动 -->
-    <div class="hintbar" style="font-size:12px;line-height:1.7">
-      <b>「归类」是把胜出照片复制一份到 <code>winners\</code>，原文件保留在原位</b>。
-      连拍的 JPG 与同名 .xmp 会跟着一起复制。
-      落选照片<b>不会</b>复制到任何地方——它们在「复查」页里管理，那里就是落选列表。
-      重复点不会产生副本：目标已有同名文件时比对内容，<b>相同就跳过</b>，
-      不同则不覆盖并提示。不开「勾选部分归类」时处理全部胜出照片。
+    <div v-if="selectMode" class="selbar">
+      <span>已选 <b>{{ selected.size }}</b> 张</span>
+      <button class="ghost sm" @click="selectAll">全选</button>
+      <button class="ghost sm" @click="selectNone">全不选</button>
     </div>
 
-    <div v-if="selectMode" class="hintbar" style="display:flex;gap:10px;align-items:center;font-size:12px">
-      <span>勾选要归类的照片（已选 <b>{{ selected.size }}</b> 张）</span>
-      <button class="ghost" style="padding:2px 10px" @click="selectAll">全选</button>
-      <button class="ghost" style="padding:2px 10px" @click="selectNone">全不选</button>
-    </div>
-
-    <!-- 结果常驻显示：toast 会被随后的状态刷新冲掉，用户看不到 -->
-    <div v-if="actionMsg" class="hintbar" :style="{
-           borderColor: actionMsg.kind === 'ok' ? 'var(--good)'
-                      : actionMsg.kind === 'warn' ? 'var(--warn)' : 'var(--bad)' }">
-      <div :style="{ color: actionMsg.kind === 'ok' ? 'var(--good)'
-                          : actionMsg.kind === 'warn' ? 'var(--warn)' : 'var(--bad)' }">
-        <b>{{ actionMsg.text }}</b>
-      </div>
-      <div v-if="actionMsg.detail" style="margin-top:4px;font-size:12px;color:var(--dim);word-break:break-all">
-        {{ actionMsg.detail }}
-      </div>
-      <!-- 导出后直接定位到 CSV，不用自己去资源管理器翻 -->
-      <div v-if="lastCsv" style="margin-top:8px">
-        <button class="ghost" style="padding:3px 12px;font-size:12px" @click="openCsv(lastCsv)">
-          📂 打开 CSV 所在位置
-        </button>
-      </div>
-    </div>
     <div class="grid">
       <PhotoCard v-for="(p, i) in winners" :key="p.path" :photo="p"
                  :style="{ animationDelay: Math.min(i * 0.03, 0.5) + 's' }"
                  :badge="p.manual_winner ? '人工召回' : ''"
-                 :note="'MUSIQ 无参考审美模型的 5 分制映射（人类平均审美参考分，AI 拿它排序）'"
-                 @click="lightbox = p.thumb_view">
+                 @click="null" @contextmenu="onContextMenu($event, p)">
         <template #footer>
-          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px">
-            <input v-if="selectMode" type="checkbox" style="width:auto;margin:0"
+          <div class="cardfoot">
+            <input v-if="selectMode" type="checkbox"
                    :checked="selected.has(p.path)" @click.stop="toggleSel(p.path)" />
-            <!-- 单张人工指定：AI 的判断可以推翻，不用受组逻辑限制 -->
-            <button class="ghost" style="padding:1px 8px;font-size:11px"
-                    @click.stop="setStatus(p.path, 'reject')">移到落选</button>
-          </div>
-          <div v-if="(groupOf(p.path)?.members.length ?? 1) > 1" style="font-size:11px;color:var(--dim)">
-            组内 {{ groupOf(p.path)!.members.length }} 选 1
+            <span v-if="(p as any).group_size > 1 || groupOf(p.path)"
+                  class="subtle" :title="'同组共 ' + (groupOf(p.path)?.members.length ?? 1) + ' 张'">
+              组内 {{ groupOf(p.path)?.members.length }} 选 1
+            </span>
           </div>
         </template>
       </PhotoCard>
     </div>
     <div v-if="!winners.length" class="empty">还没有胜出片</div>
-    <teleport to="body">
-      <div v-if="lightbox" id="lightbox-lb" class="mask on" style="z-index: 70" @click="lightbox = ''">
-        <img :src="lightbox" style="max-width: 97vw; max-height: 97vh; object-fit: contain" />
-      </div>
-    </teleport>
+
+    <!-- 右键菜单 -->
+    <div v-if="menu" class="ctxmenu" :style="{ left: menu.x + 'px', top: menu.y + 'px' }"
+         @click.stop>
+      <div class="ctxitem" @click="moveBackToReview">移回复查</div>
+      <div class="ctxitem" @click="revealFile">打开文件所在位置</div>
+    </div>
   </div>
 </template>
+
+<style scoped>
+.toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; flex-wrap: nowrap; }
+.toolbar .pgtitle { flex: 1; margin: 0; white-space: nowrap; }
+.toolbar button { white-space: nowrap; flex: 0 0 auto; }
+.subtle { color: var(--dim); font-size: 12px; font-weight: 400; }
+.selbar { display: flex; gap: 10px; align-items: center; font-size: 12px; margin-bottom: 10px; color: var(--dim); }
+.ghost.sm { padding: 2px 10px; font-size: 12px; }
+.cardfoot { display: flex; align-items: center; gap: 8px; }
+.ctxmenu {
+  position: fixed; z-index: 200; min-width: 180px; padding: 4px;
+  background: #23262e; border: 1px solid #3a3f4b; border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.45);
+}
+.ctxitem { padding: 8px 12px; border-radius: 6px; font-size: 13px; cursor: pointer; white-space: nowrap; }
+.ctxitem:hover { background: var(--acc); color: #fff; }
+</style>

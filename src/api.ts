@@ -109,13 +109,23 @@ function absT(p: Photo): Photo {
     : p
 }
 
+/** 把 groups[].members 的缩略图也补成绝对地址。
+ *
+ * 决策页用的是 group.members（后端 /api/state 单独拼的一份精简照片），
+ * 原来只对 s.photos 调了 absT，members 里还是 "/thumbs/..." 相对路径，
+ * 在 Tauri 的 file:// 下解析不到，于是决策页整页都是破图。
+ */
+function absGroups(groups: Group[]): Group[] {
+  return groups.map((g) => ({ ...g, members: g.members.map((m) => ({ ...absT(m), idx: m.idx })) }))
+}
+
 export { waitBackend }
 
 export const api = {
   async state(): Promise<State> {
     await initBase()
     const s = await req<State>('/api/state')
-    return { ...s, photos: s.photos.map(absT) }
+    return { ...s, photos: s.photos.map(absT), groups: absGroups(s.groups ?? []) }
   },
   start: (folder: string, mode: 'full' | 'incremental' | 'reset' = 'full') =>
     req<{ ok: boolean; error?: string }>('/api/start', {
@@ -152,6 +162,11 @@ export const api = {
   netSettingsSave: (use_mirror: boolean, github_mirrors: string[], http_proxy: string,
                     order: 'mirror_first' | 'direct_first' = 'mirror_first') =>
     req<{ ok: boolean }>('/api/net/settings', { use_mirror, github_mirrors, http_proxy, order }),
+  settingsGet: () => req<{
+    ok: boolean; scan_workers: number; cpu_count: number; auto_workers: number
+  }>('/api/settings'),
+  settingsSave: (scan_workers: number) =>
+    req<{ ok: boolean; scan_workers?: number; error?: string }>('/api/settings', { scan_workers }),
   pathsGet: () => req<{
     data_root: string; default_root: string; is_default: boolean; env_override: boolean
     subdirs: { key: string; label: string; path: string; size: number }[]

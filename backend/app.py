@@ -164,6 +164,10 @@ def snapshot_state() -> tuple[list, list]:
 DEFAULT_SETTINGS = {
     "burst_gap": 3.0, "phash_dist": 10, "pk_gap": 0.35,
     "min_score": 2.0, "ear_closed": 0.18, "ear_open": 0.25,
+    # 解码线程数。0 = 由程序自动决定（min(8, CPU 核数)）。
+    # 实测瓶颈是 RAW 解码（人脸 279ms/张、审美 348ms/张，其余是解码），
+    # 解码是 I/O+CPU 混合且 rawpy 不持 GIL，加线程确实能加快。
+    "scan_workers": 0,
 }
 
 def state_file() -> Path | None:
@@ -490,13 +494,27 @@ def set_status():
             ph["manual_winner"] = True
             ph["status"] = "winner"
         else:
+            # 必须带上 reject_reasons，否则 refresh_statuses 看到空原因会把它
+            # 当成"待定"重新按组逻辑算，落选状态就丢了（实测点完又变回胜出）。
             ph["manual_winner"] = False
+            if "人工落选" not in ph["reject_reasons"]:
+                ph["reject_reasons"] = list(ph["reject_reasons"]) + ["人工落选"]
             ph["status"] = "reject"
         refresh_statuses()
         # refresh 会把 manual_winner 的图改回 winner，这里再确认一次
         ph["status"] = want
         if want == "winner":
             ph["manual_winner"] = True
+        # 单图模式是逐张处理的：如果这一组已经没有任何"待定"成员，
+        # 就把 needs_pk 关掉，否则它会一直留在决策队列里出不去。
+        gi = next((i for i, p in enumerate(STATE["photos"]) if p is ph), None)
+        if gi is not None:
+            for g in STATE["groups"]:
+                if gi in g["members"]:
+                    if all(STATE["photos"][i].get("status") in ("winner", "reject")
+                           for i in g["members"] if 0 <= i < len(STATE["photos"])):
+                        g["needs_pk"] = False
+                    break
     save_state()
     return jsonify({"ok": True, "path": path, "status": want})
 
@@ -661,6 +679,37 @@ def organize():
     if not dry and plan["copied"]:
         save_state()
     return jsonify({"ok": True, **plan})
+
+@app.route("/api/settings", methods=["GET", "POST"])
+def settings_api():
+    """扫描参数设置（目前只有并发线程数）。
+
+    scan_workers: 0 = 自动（min(8, CPU 核数)）；1..CPU 核数 = 指定线程数。
+    """
+    if request.method == "POST":
+        body = request.json or {}
+        raw = body.get("scan_workers")
+        cpu = os.cpu_count() or 4
+        try:
+            n = int(raw)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "scan_workers 必须是整数"}), 400
+        if n != 0 and not (1 <= n <= cpu):
+            return jsonify({"ok": False,
+                            "error": f"线程数需在 1..{cpu} 之间，或 0 表示自动"}), 400
+        with _SNAPSHOT_LOCK:
+            STATE["settings"]["scan_workers"] = n
+        save_state()
+        return jsonify({"ok": True, "scan_workers": n})
+    cpu = os.cpu_count() or 4
+    return jsonify({
+        "ok": True,
+        "scan_workers": int(STATE["settings"].get("scan_workers") or 0),
+        "cpu_count": cpu,
+        # 自动模式实际会用到的线程数，让界面能显示"自动（8 线程）"
+        "auto_workers": min(8, max(2, cpu)),
+    })
+
 
 @app.route("/api/system/detect")
 def system_detect():

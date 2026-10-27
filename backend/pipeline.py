@@ -13,6 +13,7 @@
 """
 import io
 import json
+import os
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -205,7 +206,14 @@ def _parallel_prepare(tasks, thumbs_dir: Path, settings: dict, progress=None) ->
     results = {}
     if not tasks:
         return results
-    with ThreadPoolExecutor(max_workers=4) as pool:
+    # 线程数可配：settings["scan_workers"]，0/缺省 = 自动。
+    # 瓶颈主要是 RAW 解码（rawpy 不持 GIL），所以这里加线程是真实的并行收益；
+    # 上限定在 8，再多会被磁盘 I/O 和内存带宽吃掉，反而更慢。
+    cpu = os.cpu_count() or 4
+    want = int(settings.get("scan_workers") or 0)
+    workers = want if 1 <= want <= cpu else min(8, max(2, cpu))
+    log.info("预处理线程数: %d（CPU %d 核，配置 %s）", workers, cpu, want or "自动")
+    with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(_prepare_base, k, ent, thumbs_dir, settings): k
                    for k, ent in tasks}
         for n_done, fut in enumerate(futures, 1):

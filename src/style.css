@@ -67,6 +67,12 @@ input[type=text] {
   transition: border-color .15s;
 }
 input[type=text]:focus { border-color: var(--acc); }
+/* 按钮文字绝不折行：中文按钮在窄容器里会被按字拆成两行
+   （"开始整/理"），看起来像排版坏了。宁可撑宽也不换行。 */
+button {
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
 button.act {
   background: linear-gradient(135deg, var(--acc2), var(--acc)); border: none; color: #fff;
   padding: 9px 20px; border-radius: 8px; cursor: pointer; font-size: 14px;
@@ -90,7 +96,7 @@ button.danger:hover { filter: brightness(1.1); }
 .stat span { font-size: 12px; color: var(--dim); }
 @keyframes popIn { from { opacity: 0; transform: scale(.7); } to { opacity: 1; transform: none; } }
 
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
 .card {
   background: var(--panel); border-radius: var(--radius); overflow: hidden; cursor: pointer;
   position: relative; border: 2px solid transparent; transition: transform .18s var(--ease), border-color .18s;
@@ -99,8 +105,12 @@ button.danger:hover { filter: brightness(1.1); }
 @keyframes cardIn { from { opacity: 0; transform: translateY(10px) scale(.97); } to { opacity: 1; transform: none; } }
 .card:hover { transform: translateY(-3px); }
 .card img { width: 100%; aspect-ratio: 3/2; object-fit: cover; display: block; }
-.card .cap { padding: 7px 10px; font-size: 12px; color: var(--dim); display: flex; justify-content: space-between; gap: 6px; }
-.card .cap b { color: var(--txt); font-weight: 500; }
+/* 文件名与属性原来是左右两栏挤在 210px 里，中文会被压成两行。
+   改成上下两行：文件名一行（过长省略号），属性一行。 */
+.card .cap { padding: 9px 12px 6px; font-size: 12px; color: var(--dim); display: flex; flex-direction: column; gap: 3px; }
+.card .cap b { color: var(--txt); font-weight: 500; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card .cap > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card .cap-extra { padding: 0 12px 9px; }
 .card .score {
   position: absolute; top: 8px; right: 8px; background: rgba(0,0,0,.74); padding: 2px 9px;
   border-radius: 6px; font-size: 13px; cursor: help; z-index: 2;

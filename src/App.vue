@@ -154,10 +154,10 @@ const pages: { id: Page; label: string; key: string }[] = [
   { id: 'review', label: '复查', key: '4' },
 ]
 
-function toast(m: string) {
+function toast(m: string, ms = 3000) {
   toastMsg.value = m
   clearTimeout(toastTimer)
-  toastTimer = setTimeout(() => (toastMsg.value = ''), 2600)
+  toastTimer = setTimeout(() => (toastMsg.value = ''), ms)
 }
 async function refresh() {
   S.value = await api.state()
@@ -177,6 +177,11 @@ window.addEventListener('keydown', (e) => {
 onMounted(() => {
   refresh()
   checkUpdate(true)   // 启动静默检查
+  // 禁掉 WebView2 的默认右键菜单：里面是"共享/打印/复制图像/复制图像链接/
+  // 另存为/放大"这些浏览器功能，对本地选片工具没有意义。
+  // 用 capture 阶段拦，保证在页面任何元素之前生效；
+  // 胜出页自己的右键菜单在组件内先 preventDefault 并渲染自定义菜单。
+  document.addEventListener('contextmenu', (e) => e.preventDefault(), true)
 })
 </script>
 

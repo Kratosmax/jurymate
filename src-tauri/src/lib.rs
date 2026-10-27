@@ -232,6 +232,106 @@ fn backend_file_free() -> bool {
     true
 }
 
+/// 在资源管理器中定位文件，优先复用已经打开该目录的窗口。
+///
+/// 为什么不用 `explorer /select,`：那样每点一次就多开一个窗口。
+/// Windows 原生做法是枚举 Shell 窗口（IShellWindows），找到已打开目标
+/// 目录的那个，对它 Navigate2 到文件路径——同一个窗口内直接定位并选中。
+/// 只有确实没有已打开窗口时才新建。
+#[cfg(windows)]
+#[tauri::command]
+fn reveal_in_explorer(path: String) -> Result<String, String> {
+    use windows::core::Interface;
+    use windows::Win32::System::Variant::VARIANT;
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_APARTMENTTHREADED,
+    };
+    use windows::Win32::UI::Shell::{IShellWindows, IWebBrowser2, ShellWindows};
+
+    let target = std::path::PathBuf::from(&path);
+    if !target.exists() {
+        return Err(format!("文件不存在：{path}"));
+    }
+    let parent = target.parent().ok_or_else(|| "取不到父目录".to_string())?.to_path_buf();
+    let want = parent.to_string_lossy().replace('/', "\\").to_lowercase();
+
+    unsafe {
+        // 可能已在本线程初始化过，返回 RPC_E_CHANGED_MODE 可忽略
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+
+        if let Ok(sw) = CoCreateInstance::<_, IShellWindows>(&ShellWindows, None, CLSCTX_ALL) {
+            if let Ok(count) = sw.Count() {
+                for i in 0..count {
+                    let idx = VARIANT::from(i);
+                    let Ok(disp) = sw.Item(&idx) else { continue };
+                    let Ok(wb) = disp.cast::<IWebBrowser2>() else { continue };
+                    let Ok(url) = wb.LocationURL() else { continue };
+                    let u = url.to_string();
+                    let decoded = percent_decode(u.trim_start_matches("file:///").replace('/', "\\").as_str());
+                    if decoded.to_lowercase() == want {
+                        let arg = VARIANT::from(path.as_str());
+                        if wb.Navigate2(&arg, None, None, None, None).is_ok() {
+                            return Ok("reused".into());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 没有已打开的窗口：交给系统原生「打开文件夹并选中」
+    let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        use windows::Win32::UI::Shell::{ILFindLastID, SHOpenFolderAndSelectItems, SHParseDisplayName};
+        use windows::core::PCWSTR;
+        let mut pidl = std::ptr::null_mut();
+        let mut attrs = 0u32;
+        SHParseDisplayName(PCWSTR(wide.as_ptr()), None, &mut pidl, 0, Some(&mut attrs))
+            .map_err(|e| format!("解析路径失败: {e}"))?;
+        let child = ILFindLastID(pidl);
+        let r = SHOpenFolderAndSelectItems(pidl, Some(&[child]), 0);
+        windows::Win32::System::Com::CoTaskMemFree(Some(pidl as *const _));
+        r.map_err(|e| format!("打开失败: {e}"))?;
+    }
+    Ok("opened".into())
+}
+
+#[cfg(windows)]
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let (Some(h), Some(l)) = (hex_val(b[i + 1]), hex_val(b[i + 2])) {
+                out.push(h * 16 + l);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).to_string()
+}
+
+#[cfg(windows)]
+fn hex_val(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    }
+}
+
+#[cfg(not(windows))]
+#[tauri::command]
+fn reveal_in_explorer(path: String) -> Result<String, String> {
+    let _ = path;
+    Err("仅支持 Windows".into())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -239,7 +339,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .invoke_handler(tauri::generate_handler![greet, backend_port, backend_status, set_debug, prepare_update])
+        .invoke_handler(tauri::generate_handler![greet, backend_port, backend_status, set_debug, prepare_update, reveal_in_explorer])
         .setup(|app| {
             let handle = app.handle().clone();
             let _ = APP_HANDLE.set(handle.clone());

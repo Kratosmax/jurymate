@@ -121,6 +121,24 @@ const netProxy = ref('')
 const useMirror = ref(false)
 const netOrder = ref<'mirror_first' | 'direct_first'>('mirror_first')
 const netSavedMsg = ref('')
+
+// ---- 性能设置 ----
+const perf = ref({ scan_workers: 0, cpu_count: 8, auto_workers: 4 })
+async function loadPerf() {
+  try {
+    const p = await api.settingsGet()
+    if (p.ok) perf.value = { scan_workers: p.scan_workers, cpu_count: p.cpu_count, auto_workers: p.auto_workers }
+  } catch {}
+}
+async function savePerf() {
+  const r = await api.settingsSave(perf.value.scan_workers || 0)
+  if (r.ok) {
+    emit('toast', '已保存，下次扫描生效')
+    await loadPerf()
+  } else {
+    emit('toast', r.error || '保存失败')
+  }
+}
 async function loadNet() {
   try {
     const n = await api.netSettingsGet()
@@ -148,7 +166,7 @@ onMounted(async () => {
   const ok = await waitBackend().catch(() => false)
   if (!ok) { pathErr.value = '后端未在预期时间内就绪，可稍后刷新本页'; return }
   pathErr.value = ''
-  await Promise.all([loadPaths(), loadNet()])
+  await Promise.all([loadPaths(), loadNet(), loadPerf()])
 })
 </script>
 
@@ -208,19 +226,15 @@ onMounted(async () => {
            style="margin-top:10px;font-size:12px;white-space:pre-wrap;max-height:180px;overflow:auto">
         {{ props.updater.updateInfo.body }}
       </div>
-      <div class="dim" style="margin-top:10px;font-size:12px">
-        下面「网络设置」里的代理同时作用于检查更新与模型下载，是一套配置。
-        未填代理时更新器走系统代理；填了就以这里为准。
+      <div class="dim" style="margin-top:10px;font-size:12px"
+           title="网络设置里的代理同时作用于检查更新与模型下载；不填则走系统代理">
+        ⓘ 代理与模型下载共用「网络设置」里的那一套。
       </div>
     </section>
 
     <!-- 存储位置 -->
     <section class="card">
       <h2>存储位置</h2>
-      <div class="dim" style="font-size:12px;margin-bottom:10px">
-        模型、缓存、日志、临时解压都放在这个目录下。系统盘空间紧张时换到别的盘，
-        换目录时会自动把已有数据一起迁过去。
-      </div>
 
       <div v-if="pathErr" class="hintbar" style="border-color:var(--bad);margin-bottom:10px">读取路径失败：{{ pathErr }}</div>
       <div v-if="pathsInfo?.env_override" class="hintbar" style="border-color:var(--warn);margin-bottom:10px">
@@ -290,18 +304,15 @@ onMounted(async () => {
         </tbody>
       </table>
 
-      <div class="dim" style="margin-top:12px;font-size:12px">
-        切换会迁移模型与缓存（数百 MB，可能需要几十秒）。临时解压目录不迁移，
-        里面是每次启动重建的运行时。日志若正被占用则改为复制，旧文件需手动删除。
+      <div class="dim" style="margin-top:12px;font-size:12px"
+           title="临时解压目录不迁移；日志若被占用会改为复制">
+        ⓘ 切换时自动迁移已有数据。
       </div>
     </section>
 
     <!-- 网络设置 -->
     <section class="card">
       <h2>网络设置</h2>
-      <div class="dim" style="font-size:12px;margin-bottom:10px">
-        默认从模型原仓库直连下载。国内网络不通时，可开启镜像站或填代理。
-      </div>
 
       <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px;font-size:13px">
         <input type="checkbox" v-model="useMirror" style="width:auto;margin:0" />
@@ -339,6 +350,31 @@ onMounted(async () => {
       <div style="margin-top:12px;display:flex;align-items:center;gap:10px">
         <button class="act" style="padding:5px 14px;font-size:12px" @click="saveNet">保存网络设置</button>
         <span v-if="netSavedMsg" class="dim" style="font-size:12px;color:var(--good)">{{ netSavedMsg }}</span>
+      </div>
+    </section>
+
+    <!-- 性能 -->
+    <section class="card">
+      <h2>性能</h2>
+      <div class="row">
+        <div>
+          <div style="font-size:13px">
+            扫描并发线程数
+            <span class="dim" style="font-size:12px">（本机 {{ perf.cpu_count }} 核）</span>
+          </div>
+          <div class="dim" style="font-size:12px;margin-top:3px"
+               title="解码是性能瓶颈；线程越多越快，但超过磁盘和内存带宽后会回落">
+            影响 RAW 解码速度；留 0 由程序自动选择。
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;flex:0 0 auto">
+          <input type="number" v-model.number="perf.scan_workers" min="0"
+                 :max="perf.cpu_count" style="width:88px;padding:6px 8px;font-size:13px" />
+          <span class="dim" style="font-size:12px;white-space:nowrap">
+            {{ perf.scan_workers === 0 ? `自动（${perf.auto_workers}）` : `1–${perf.cpu_count}` }}
+          </span>
+          <button class="act" style="padding:5px 14px;font-size:12px" @click="savePerf">保存</button>
+        </div>
       </div>
     </section>
   </div>
