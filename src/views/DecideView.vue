@@ -23,9 +23,16 @@ function rebuild() {
   const curId = queue.value[pos.value]?.id
   queue.value = next
   const keep = curId == null ? -1 : next.findIndex((g) => g.id === curId)
-  pos.value = keep >= 0
-    ? keep
-    : Math.min(Math.max(pos.value, 0), Math.max(next.length - 1, 0))
+  // 队列缩短时必须把 pos 夹回合法范围。原来只 clamp 到 next.length-1，
+  // 但当 next 为空时 Math.max(next.length-1, 0) = 0，pos 会停在 0，
+  // 而 queue[0] 是 undefined —— group 为 null、模板崩溃。
+  if (!next.length) {
+    pos.value = 0
+  } else {
+    pos.value = keep >= 0
+      ? keep
+      : Math.min(Math.max(pos.value, 0), next.length - 1)
+  }
   selDraw()
 }
 watch(() => props.state, rebuild)
@@ -83,9 +90,19 @@ async function onKey(e: KeyboardEvent) {
 
 <template>
   <div class="view" id="p-pk">
-    <div v-if="!queue.length" class="hintbar">
-      没有需要你拍板的组 —— AI 对每组的选择都很笃定。看看
-      <a href="#" @click.prevent="$emit('done')">胜出页</a> 或通知里提到的复查区。
+    <!-- 必须判断 group 是否存在，不能只判断 queue.length：
+         rebuild() 在队列缩短时可能把 pos 留在旧位置（pos == queue.length），
+         此时 queue 非空但 group 为 null，模板里 group.members 直接抛
+         "Cannot read properties of null (reading 'members')"，整页白屏。 -->
+    <div v-if="!group" class="hintbar">
+      <template v-if="!queue.length">
+        没有需要你拍板的组 —— AI 对每组的选择都很笃定。看看
+        <a href="#" @click.prevent="$emit('done')">胜出页</a> 或通知里提到的复查区。
+      </template>
+      <template v-else>
+        当前组已处理完，正在刷新…（若长时间停在这里，点
+        <a href="#" @click.prevent="rebuild">这里</a> 重新载入）
+      </template>
     </div>
     <template v-else>
       <div class="hintbar">

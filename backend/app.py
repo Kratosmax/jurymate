@@ -457,6 +457,50 @@ def _recall_apply(ph: dict, path: str, ph_aes: float | None = None):
     save_state()
     return jsonify({"ok": True, "aesthetic": ph.get("aesthetic")})
 
+
+@app.route("/api/set_status", methods=["POST"])
+def set_status():
+    """人工指定单张照片的胜负，绕过组逻辑。
+
+    用户需要能直接说"这张我要 / 这张不要"，而不是只能接受 AI 的组内选择。
+    body: {path, status: "winner"|"reject"}
+
+    与 pk 接口的区别：pk 作用于"组"（选组内胜者），这里作用于"单张"，
+    且不受 group.winner 影响——refresh_statuses 里 manual_winner 优先于
+    组逻辑，所以这样设的胜出不会被后续重算覆盖。
+    """
+    body = request.json or {}
+    path = body.get("path")
+    want = body.get("status")
+    if want not in ("winner", "reject"):
+        return jsonify({"ok": False, "error": "status 只能是 winner 或 reject"}), 400
+    with _SNAPSHOT_LOCK:
+        ph = next((p for p in STATE["photos"] if p["path"] == path), None)
+        if not ph:
+            return jsonify({"ok": False, "error": "照片不存在"}), 404
+        # 快照用于撤销：人工改状态是最容易点错的操作
+        STATE["undo_stack"].append(json.dumps(
+            {"photos": [{"path": ph["path"], "status": ph["status"],
+                         "reject_reasons": ph["reject_reasons"],
+                         "manual_winner": ph.get("manual_winner", False)}],
+             "groups": []}, ensure_ascii=False))
+        if want == "winner":
+            # 人工定胜：清掉机器给的落选理由，否则 refresh 会立刻把它判回 reject
+            ph["reject_reasons"] = []
+            ph["manual_winner"] = True
+            ph["status"] = "winner"
+        else:
+            ph["manual_winner"] = False
+            ph["status"] = "reject"
+        refresh_statuses()
+        # refresh 会把 manual_winner 的图改回 winner，这里再确认一次
+        ph["status"] = want
+        if want == "winner":
+            ph["manual_winner"] = True
+    save_state()
+    return jsonify({"ok": True, "path": path, "status": want})
+
+
 @app.route("/api/undo", methods=["POST"])
 def undo():
     with _SNAPSHOT_LOCK:
@@ -491,11 +535,17 @@ def organize():
       任意 RAW 扩展名——V1.0 只认大写 .ARW 是 bug）；
     - 目标重名不覆盖（跳过并计数）；
     - dry=true 只返回计划不移动（测试用）。
+
+    可选 paths：只处理这些照片（用户在界面上勾选的子集）。
+    不传则处理全部——这是默认行为，也是老版本的语义。
     """
     folder = Path(STATE["folder"])
     if not STATE["photos"]:
         return jsonify({"ok": False, "error": "还没有扫描结果"}), 400
-    dry = bool((request.json or {}).get("dry"))
+    body = request.json or {}
+    dry = bool(body.get("dry"))
+    only = body.get("paths")
+    only_set = set(only) if isinstance(only, list) and only else None
     plan = {"winners": 0, "rejects": 0, "pending_kept": 0, "skipped_conflict": 0}
     moves = []  # (src, dst)
 
@@ -511,6 +561,8 @@ def organize():
         log.warning("organize: 列目录失败，按无 sidecar 处理：%s", e)
 
     for ph in STATE["photos"]:
+        if only_set is not None and ph["path"] not in only_set:
+            continue          # 用户只勾选了部分照片
         if ph["status"] == "pending":
             plan["pending_kept"] += 1
             continue
@@ -879,16 +931,29 @@ def export_csv():
 
 @app.route("/api/open_folder", methods=["POST"])
 def open_folder():
-    """在资源管理器中打开结果文件夹（本地单用户工具的合理便利）。"""
+    """在资源管理器中打开结果文件夹（本地单用户工具的合理便利）。
+
+    可选 sub: "winners"/"rejects" 只打开该子目录。
+    可选 select: 一个文件名（如 winners_report.csv），打开所在目录并**选中该文件**。
+                 导出后要用它——否则用户还得自己在资源管理器里找。
+    """
     if not STATE["folder"]:
         return jsonify({"ok": False, "error": "还没有扫描结果"}), 400
-    sub = (request.json or {}).get("sub") or ""
+    body = request.json or {}
+    sub = body.get("sub") or ""
+    sel = (body.get("select") or "").strip()
     d = Path(STATE["folder"])
     if sub in ("winners", "rejects") and (d / sub).exists():
         d = d / sub
     if not d.exists():
         return jsonify({"ok": False, "error": "目录不存在"}), 404
     import subprocess
+    if sel:
+        target = d / sel
+        if target.exists():
+            # explorer 的 /select, 语法要求逗号紧跟，且路径带引号
+            subprocess.Popen(["explorer", f"/select,{target}"])
+            return jsonify({"ok": True, "selected": str(target)})
     subprocess.Popen(["explorer", str(d)])
     return jsonify({"ok": True})
 

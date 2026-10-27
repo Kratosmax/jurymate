@@ -127,10 +127,17 @@ export const api = {
   pk: (group_id: number, action: 'pick' | 'all' | 'none', pick?: number) =>
     req<{ ok: boolean; error?: string }>('/api/pk', { group_id, action, pick }),
   recall: (path: string) => req<{ ok: boolean; aesthetic: number | null; error?: string; hint?: string }>('/api/recall', { path }),
+  // 人工指定单张胜负：绕过组逻辑，用户可以直接说"这张要/不要"
+  setStatus: (path: string, status: 'winner' | 'reject') =>
+    req<{ ok: boolean; status?: string; error?: string }>('/api/set_status', { path, status }),
   undo: () => req<{ ok: boolean; error?: string }>('/api/undo', {}),
-  organize: (dry: boolean) => req<{ ok: boolean; moved?: number; winners?: number; rejects?: number; pending_kept?: number; skipped_conflict?: number; error?: string }>('/api/organize', { dry }),
+  // 归类支持只移动指定照片（不传 paths = 全部按当前胜负）
+  organize: (dry: boolean, paths?: string[]) =>
+    req<{ ok: boolean; moved?: number; winners?: number; rejects?: number; pending_kept?: number; skipped_conflict?: number; error?: string }>(
+      '/api/organize', { dry, paths }),
   exportCsv: () => req<{ ok: boolean; path?: string; rows?: number; error?: string }>('/api/export_csv', {}),
-  openFolder: (sub = 'winners') => req<{ ok: boolean; error?: string }>('/api/open_folder', { sub }),
+  openFolder: (sub = '', select = '') =>
+    req<{ ok: boolean; selected?: string; error?: string }>('/api/open_folder', { sub, select }),
   systemDetect: () => req<any>('/api/system/detect'),
   modelsDownload: (id: string) => req<{ ok: boolean; error?: string | null }>('/api/models/download', { id }),
   modelsProgress: () => req<{ running: boolean; done: number; total: number; id: string; error: string | null }>('/api/models/progress'),
