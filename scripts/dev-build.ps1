@@ -167,6 +167,23 @@ try {
 
 Say ("sidecar {0:N1} MB" -f ((Get-Item $exe).Length / 1MB)) Green
 
+# ---- 运行期依赖自检 ----
+# 函数内延迟导入的模块（mediapipe.tasks、torchvision._C）PyInstaller 静态
+# 分析看不到，源码跑一万遍也发现不了，只有产物自己 import 一次才知道。
+# 0.1.9 就是本地全绿、装好一点整理就崩，所以这一步必须在打包安装器之前做。
+Say "sidecar 运行期依赖自检"
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+try {
+    & $exe --doctor *> (Join-Path $logs "doctor.log")
+    $docCode = $LASTEXITCODE
+} finally { $ErrorActionPreference = $prevEap }
+if ($docCode -ne 0) {
+    Get-Content (Join-Path $logs "doctor.log") -Tail 30 | ForEach-Object { "    $_" }
+    throw "sidecar --doctor 未通过（退出码 $docCode）：打包缺少运行期依赖，详见 temp\logs\doctor.log"
+}
+Write-Host "    doctor 通过：运行期依赖齐全" -ForegroundColor DarkGray
+
 # ---- 安装包 ----
 Say "构建安装包"
 Push-Location $repo

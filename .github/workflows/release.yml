@@ -116,14 +116,14 @@ jobs:
           $exe = "dist-backend/jury-backend.exe"
           if (-not (Test-Path $exe)) { throw "产物缺失: $exe" }
 
-          # 防回归：函数内延迟导入的模块必须真的打进去了。
-          # 0.1.9 本地验收时就是漏了 mediapipe.tasks.c，装好一点整理就崩，
-          # 而源码跑完全正常——这类问题必须在 CI 拦住。
-          $log = Get-Content build-backend/build/jury-backend/warn-jury-backend.txt -Raw -EA SilentlyContinue
-          foreach ($m in @('mediapipe', 'insightface', 'pyiqa')) {
-            if ($log -match "missing module named $m") {
-              throw "PyInstaller 报告缺少模块 $m，检查 --hidden-import 是否漏了"
-            }
+          # 防回归（真正的验收）：让产物自己 import 一遍并实调 torchvision::nms。
+          # 函数内延迟导入的模块 PyInstaller 静态分析看不到，源码环境跑一万遍
+          # 也发现不了；而读 warn-*.txt 做文本匹配必然被无害的可选缺失
+          # （fcntl/wandb/albumentations 等）干扰，写出来就是误报。
+          # 实测：故意漏收 torchvision 时这里的退出码为 1。
+          & $exe --doctor
+          if ($LASTEXITCODE -ne 0) {
+            throw "sidecar --doctor 未通过：打包缺少运行期依赖（详见上面的 FAIL 行）"
           }
 
           # 防回归：确认是 GUI 子系统（Subsystem=2），否则用户会看到控制台黑窗。

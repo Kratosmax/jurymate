@@ -890,7 +890,60 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=5090)
     ap.add_argument("--no-browser", action="store_true")
+    # --doctor：不启服务，只验证打包是否完整，退出码非 0 即失败。
+    # 为什么要它：函数内延迟导入的模块（mediapipe.tasks、torchvision._C）
+    # PyInstaller 静态分析看不到，源码环境跑一万遍也发现不了漏收；
+    # 而读 PyInstaller 的 warn-*.txt 做文本匹配又必然被一堆无害的可选缺失
+    # （fcntl/wandb/albumentations…）干扰。真正可靠的做法是让产物自己
+    # 试着 import 一次，失败就报错——CI 里跑这一句就够。
+    ap.add_argument("--doctor", action="store_true")
     args = ap.parse_args()
+
+    if args.doctor:
+        import importlib
+        checks = [
+            ("mediapipe", "闭眼检测"),
+            ("mediapipe.tasks", "闭眼检测"),
+            ("mediapipe.tasks.python", "闭眼检测"),
+            ("mediapipe.tasks.python.vision", "闭眼检测"),
+            ("insightface", "人脸检测"),
+            ("insightface.app", "人脸检测"),
+            ("cv2", "图像读写"),
+            ("numpy", "数值"),
+            ("torch", "审美评分"),
+            ("torchvision", "审美评分"),
+            ("pyiqa", "审美评分"),
+            ("rawpy", "RAW 解码"),
+            ("PIL", "图像"),
+            ("flask", "服务"),
+        ]
+        failed = []
+        for mod, purpose in checks:
+            try:
+                importlib.import_module(mod)
+                print(f"[ OK ] {mod:32s} {purpose}")
+            except Exception as e:
+                failed.append((mod, purpose, e))
+                print(f"[FAIL] {mod:32s} {purpose}  -> {e}")
+        # torchvision 的 C++ 扩展是单独 load_library 的，import 成功不代表
+        # nms 算子可用（0.1.9 就是这样漏过检查的），必须实调一次。
+        try:
+            import torch
+            import torchvision  # noqa: F401
+            _ = torch.ops.torchvision.nms(
+                torch.tensor([[0., 0., 10., 10.]]),
+                torch.tensor([0.9]), 0.5)
+            print(f"[ OK ] {'torchvision::nms':32s} 检测框后处理")
+        except Exception as e:
+            failed.append(("torchvision::nms", "检测框后处理", e))
+            print(f"[FAIL] {'torchvision::nms':32s} 检测框后处理  -> {e}")
+
+        if failed:
+            print(f"\nDOCTOR FAILED: {len(failed)} 项不可用")
+            sys.exit(1)
+        print("\nDOCTOR OK: 全部可用")
+        sys.exit(0)
+
     # 端口被占（双开/僵尸进程）自动顺延——实测浏览器打开旧端口会白屏排查半天
     port = args.port
     for _ in range(10):
