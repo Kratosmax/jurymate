@@ -78,14 +78,17 @@ fn data_root() -> std::path::PathBuf {
     root
 }
 
-/// debug 开关持久化在 %LOCALAPPDATA%/JuryMate/settings.json
-fn debug_enabled(app: &tauri::AppHandle) -> bool {
-    let dir = app
-        .path()
-        .app_config_dir()
-        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default());
-    let p = dir.join("settings.json");
-    std::fs::read_to_string(p)
+/// 壳自己的配置也放数据根下，跟着用户的「存储位置」走。
+///
+/// 不用 Tauri 的 app_config_dir()：那个位置固定在 %LOCALAPPDATA%/com.jurymate.app，
+/// 用户把数据目录换到别的盘后，这里仍留在系统盘，与"所有存储位置可自定义"矛盾。
+fn app_settings_path() -> std::path::PathBuf {
+    data_root().join("settings.json")
+}
+
+/// debug 开关持久化在 <数据根>/settings.json
+fn debug_enabled(_app: &tauri::AppHandle) -> bool {
+    std::fs::read_to_string(app_settings_path())
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         .and_then(|v| v.get("debug").and_then(|d| d.as_bool()))
@@ -94,14 +97,10 @@ fn debug_enabled(app: &tauri::AppHandle) -> bool {
 
 #[tauri::command]
 fn set_debug(enabled: bool) -> Result<(), String> {
-    let dir = crate::APP_HANDLE
-        .get()
-        .ok_or("app not ready")?
-        .path()
-        .app_config_dir()
-        .map_err(|e| e.to_string())?;
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let p = dir.join("settings.json");
+    let p = app_settings_path();
+    if let Some(dir) = p.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
     let mut cfg: serde_json::Value = std::fs::read_to_string(&p).ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_else(|| serde_json::json!({}));
