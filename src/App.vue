@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { api } from './api'
 import { check, type Update } from '@tauri-apps/plugin-updater'
 import { relaunch } from '@tauri-apps/plugin-process'
+import { invoke } from '@tauri-apps/api/core'
 
 const updateInfo = ref<{ version: string; body: string } | null>(null)
 const updating = ref(false)
@@ -57,6 +58,11 @@ async function doUpdate() {
     console.info('[jurymate] 更新器使用代理(下载):', proxy ?? '(系统代理/直连)')
     const u: Update | null = await check({ proxy })
     if (!u) return
+    // 关键：安装器起来时应用还活着、sidecar 也还活着，会锁住
+    // dist-backend/*.exe 导致安装卡在"文件被占用"。必须在下载安装前
+    // 主动停掉后端并等文件真正释放（RunEvent::Exit 的清理来得太晚）。
+    updStage.value = '准备安装'
+    await invoke<string>('prepare_update').catch(() => 'skip')
     updStage.value = '下载中'
     await u.downloadAndInstall((ev) => {
       if (ev.event === 'Started') {

@@ -154,13 +154,52 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
+/// 安装更新前主动停掉后端。
+///
+/// 为什么不能只靠 app 退出时清理：更新器（tauri-plugin-updater）的执行顺序是
+///   on_before_exit 钩子 → **spawn 安装器** → 应用退出
+/// 安装器进程起来时应用还活着，sidecar 也还活着，安装器于是报
+/// "Error opening file for writing: dist-backend\jury-backend.exe" 并卡住。
+/// RunEvent::Exit 要到后面才触发，那时已经晚了。
+///
+/// 所以由前端在 downloadAndInstall 之前先调这个命令，确保文件已释放。
+#[tauri::command]
+fn prepare_update() -> String {
+    kill_backend();
+    kill_backend_by_name();
+    // 给 Windows 一点时间释放文件句柄，否则安装器可能仍撞到占用
+    for _ in 0..20 {
+        if backend_file_free() {
+            return "ok".into();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    "busy".into()
+}
+
+/// 探测 dist-backend/jury-backend.exe 当前能否独占打开。
+#[cfg(windows)]
+fn backend_file_free() -> bool {
+    let Some(app) = APP_HANDLE.get() else { return true };
+    let Some(p) = backend_exe(app) else { return true };
+    match std::fs::OpenOptions::new().read(true).write(true).open(&p) {
+        Ok(_) => true,
+        Err(_) => false,
+    }
+}
+
+#[cfg(not(windows))]
+fn backend_file_free() -> bool {
+    true
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .invoke_handler(tauri::generate_handler![greet, backend_port, backend_status, set_debug])
+        .invoke_handler(tauri::generate_handler![greet, backend_port, backend_status, set_debug, prepare_update])
         .setup(|app| {
             let handle = app.handle().clone();
             let _ = APP_HANDLE.set(handle.clone());
