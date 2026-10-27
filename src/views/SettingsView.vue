@@ -25,8 +25,9 @@ function fmt(b: number): string {
 }
 
 async function loadPaths() {
-  // 后端是 PyInstaller onefile，首次启动要把约 1.1GB 运行时解压出来，
-  // 实测冷启动可达 20 秒以上。这里必须等够，否则用户看到的就是一个「—」。
+  // 首次统计目录占用要递归扫 tmp（常驻几 GB），实测 5 秒左右；
+  // 后端有 30 秒缓存，之后就是毫秒级。这里把等待说明写准，
+  // 否则用户会以为是"后端没启动"。
   let lastErr = ''
   for (let i = 0; i < 60; i++) {
     try {
@@ -35,7 +36,7 @@ async function loadPaths() {
       const e = (p as any)?.error
       lastErr = e ? String(e).slice(0, 120) : '返回缺少 data_root'
     } catch (e) { lastErr = String(e).slice(0, 120) }
-    if (i === 0) pathErr.value = '正在等待后端启动…'
+    if (i === 0) pathErr.value = '正在统计各目录占用（首次需数秒）…'
     await new Promise(r => setTimeout(r, 1000))
   }
   pathErr.value = lastErr

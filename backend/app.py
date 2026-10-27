@@ -10,9 +10,46 @@ import os
 import shutil
 import sys
 import threading
+import time
 from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory
+
+
+# --windowed 打包时 sys.stdout / sys.stderr 都是 None。
+# 我们自己的日志用 _stderr_is_tty 兜住了，但**第三方库**会直接
+# print() 或 sys.stdout.write()——例如 pyiqa 加载权重时往 stdout 写
+# 下载进度条，于是抛：
+#   AttributeError: 'NoneType' object has no attribute 'write'
+# 这个异常还会被包装成 ModelUnavailable，看起来像"模型缺失"，
+# 实际模型就在本地，排查方向完全被带偏（0.1.9 真机验收时踩到）。
+# 必须在导入任何第三方库之前换掉，所以这段放在文件最前面。
+class _NullIO:
+    def write(self, *a, **k):
+        return 0
+    def flush(self):
+        pass
+    def isatty(self):
+        return False
+    def fileno(self):
+        raise OSError("no fileno")
+    def readline(self, *a, **k):
+        return ""
+    def close(self):
+        pass
+    @property
+    def encoding(self):
+        return "utf-8"
+    @property
+    def errors(self):
+        return "replace"
+
+
+if sys.stdout is None:
+    sys.stdout = _NullIO()
+if sys.stderr is None:
+    sys.stderr = _NullIO()
+
 
 import errors
 import paths
@@ -35,6 +72,7 @@ def _stderr_is_tty() -> bool:
         return bool(sys.stderr) and sys.stderr.isatty()
     except Exception:
         return False
+
 
 if os.environ.get("JURYMATE_DEBUG") or _stderr_is_tty():
     try:
@@ -202,7 +240,7 @@ def preflight_models():
     更重要的是——如果模型缺了却让用户以为"整理完成"，结果里所有人脸信号
     都是空的，比直接报错难排查得多。
     """
-    missing = [m for m in models_mod.MODELS if not models_mod._installed(m)]
+    missing = [m for m in models_mod.models() if not models_mod._installed(m)]
     if missing:
         # 数量多时只列前两个，避免提示条过长
         names = "、".join(m["name"] for m in missing[:2])
@@ -633,6 +671,24 @@ def paths_api():
                 # 不能出现"配置指向新目录、但数据还在旧目录"的割裂状态。
                 if old_root != new_root:
                     paths.write_conf(data_root="" if not raw else str(new_root))
+
+                # 让已加载的模型实例失效。
+                # faces._FACES / aesthetic._predictor 都是全局单例，内部绑定
+                # 加载时那个模型目录；不清掉就会出现"目录切到 D 盘、推理仍在
+                # 读 C 盘"的鬼状态——这类问题从界面上完全看不出来。
+                try:
+                    import faces as _faces_mod
+                    import aesthetic as _aes_mod
+                    _faces_mod.reset_cache()
+                    _aes_mod.reset_cache()
+                    log.info("paths: 已清除模型缓存，下次推理按新目录加载")
+                except Exception as e:
+                    log.warning("paths: 清除模型缓存失败（重启后仍会生效）：%s", e)
+
+                # 迁移可能是在后台完成的，用户重新打开设置页时
+                # 不能还看到缓存里的旧占用数字。
+                _SIZE_CACHE.clear()
+
                 MIGRATE.update(current="迁移完成", done=total_bytes)
                 log.info("paths: %s -> %s (migrated=%s skipped=%s)",
                          old_root, new_root,
@@ -718,7 +774,7 @@ def _migrate_path(src: Path, dst: Path) -> str:
 def _paths_payload() -> dict:
     root = paths.data_dir()
     subs = [{"key": k, "label": lb, "path": str(root / k),
-             "size": _dir_size(root / k) if (root / k).exists() else 0}
+             "size": _dir_size_cached(root / k)}
             for k, lb in _DATA_SUBDIRS]
     return {
         "data_root": str(root),
@@ -727,6 +783,26 @@ def _paths_payload() -> dict:
         "env_override": bool(os.environ.get("JURYMATE_DATA_DIR", "").strip()),
         "subdirs": subs,
     }
+
+
+# 占用统计缓存：{(路径, 指纹): (字节数, 时间戳)}
+# 为什么要缓存：tmp 常驻几 GB，递归统计一次要几百毫秒到数秒，
+# 设置页每次打开都算会让接口超时（实测过 /api/paths 超时）。
+_SIZE_CACHE: dict[str, tuple[int, float]] = {}
+_SIZE_TTL = 30.0      # 秒；30 秒内的重复查询直接复用
+
+
+def _dir_size_cached(p: Path) -> int:
+    if not p.exists():
+        return 0
+    key = str(p)
+    now = time.time()
+    hit = _SIZE_CACHE.get(key)
+    if hit and now - hit[1] < _SIZE_TTL:
+        return hit[0]
+    size = _dir_size(p)
+    _SIZE_CACHE[key] = (size, now)
+    return size
 
 
 @app.route("/api/net/settings", methods=["GET", "POST"])

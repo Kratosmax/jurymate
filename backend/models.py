@@ -134,39 +134,48 @@ def _apply_proxy_env(http_proxy: str | None) -> None:
         else:
             os.environ.pop(k, None)
 
-MODELS = [
-    {
-        "id": "face_landmarker",
-        "name": "FaceLandmarker（闭眼检测）",
-        "size_mb": 3.7,
-        "path": paths.data_dir() / "face_landmarker.task",
-        "url": ("https://storage.googleapis.com/mediapipe-models/face_landmarker/"
-                "face_landmarker/float16/1/face_landmarker.task"),
-        "unpack": "file",
-    },
-    {
-        "id": "buffalo_l",
-        "name": "人脸检测 / 识别（insightface）",
-        "size_mb": 330,
-        # 与 faces._model_root() 同一处：<数据目录>/insightface/models/buffalo_l
-        "path": paths.data_dir() / "insightface" / "models" / "buffalo_l",
-        "url": "https://github.com/deepinsight/insightface/releases/download/models/buffalo_l.zip",
-        # 产物是 zip：必须解压成目录，insightface 的 storage.download 也是这么做的
-        "unpack": "zip",
-    },
-    {
-        "id": "musiq",
-        "name": "MUSIQ 审美评分权重",
-        "size_mb": 104,
-        # pyiqa 按 torch.hub.get_dir()/pyiqa/<url 文件名> 查找；paths.py 已把
-        # TORCH_HOME 钉到数据目录，故这里是 <数据目录>/torch/hub/pyiqa/<文件>
-        "path": paths.torch_dir() / "hub" / "pyiqa"
-                / "musiq_koniq_ckpt-e95806b9.pth",
-        "url": ("https://hf-mirror.com/chaofengc/IQA-PyTorch-Weights/resolve/main/"
-                "musiq_koniq_ckpt-e95806b9.pth"),
-        "unpack": "file",
-    },
-]
+def models() -> list[dict]:
+    """模型清单，**每次调用都按当前数据根重新解析路径**。
+
+    为什么不能做成模块级常量：切换数据目录后 paths.data_dir() 会变，
+    若路径在 import 时就固化，进程内所有模型检查/下载仍指向旧目录，
+    表现为"切完目录，模型突然全部报缺失，重启才恢复"。
+    """
+    root = paths.data_dir()
+    return [
+        {
+            "id": "face_landmarker",
+            "name": "FaceLandmarker（闭眼检测）",
+            "size_mb": 3.7,
+            "path": root / "face_landmarker.task",
+            "url": ("https://storage.googleapis.com/mediapipe-models/face_landmarker/"
+                    "face_landmarker/float16/1/face_landmarker.task"),
+            "unpack": "file",
+        },
+        {
+            "id": "buffalo_l",
+            "name": "人脸检测 / 识别（insightface）",
+            "size_mb": 330,
+            # 与 faces._model_root() 同一处：<数据目录>/insightface/models/buffalo_l
+            "path": root / "insightface" / "models" / "buffalo_l",
+            "url": "https://github.com/deepinsight/insightface/releases/download/models/buffalo_l.zip",
+            # 产物是 zip：必须解压成目录，insightface 的 storage.download 也是这么做的
+            "unpack": "zip",
+        },
+        {
+            "id": "musiq",
+            "name": "MUSIQ 审美评分权重",
+            "size_mb": 104,
+            # pyiqa 按 torch.hub.get_dir()/pyiqa/<url 文件名> 查找；paths.py 已把
+            # TORCH_HOME 钉到数据目录，故这里是 <数据目录>/torch/hub/pyiqa/<文件>
+            "path": paths.torch_dir() / "hub" / "pyiqa"
+                    / "musiq_koniq_ckpt-e95806b9.pth",
+            "url": ("https://hf-mirror.com/chaofengc/IQA-PyTorch-Weights/resolve/main/"
+                    "musiq_koniq_ckpt-e95806b9.pth"),
+            "unpack": "file",
+        },
+    ]
+
 
 def detect() -> dict:
     """硬件与推理后端检测 + 模型安装状态。
@@ -175,15 +184,15 @@ def detect() -> dict:
     避免出现"界面提示推荐 X、实际跑 Y"的分裂。
     """
     hw = hardware.describe_backend()
-    models = []
-    for m in MODELS:
-        models.append({"id": m["id"], "name": m["name"], "size_mb": m["size_mb"],
-                       "installed": _installed(m)})
+    models_list = []
+    for m in models():
+        models_list.append({"id": m["id"], "name": m["name"], "size_mb": m["size_mb"],
+                            "installed": _installed(m)})
     net = load_net_settings()
     return {"providers": hw["providers"], "gpu": hw["gpu"],
             "backend": hw["backend"], "backend_hint": hw["backend_hint"],
             "vendor": hw["vendor"], "ranked": hw["ranked"],
-            "models": models, "net": net}
+            "models": models_list, "net": net}
 
 def _download_via_routes(routes, dest: Path, http_proxy: str | None, dl: dict) -> None:
     """按路由列表降级下载；代理对每条路由统一生效。"""
@@ -245,7 +254,7 @@ def _unpack_zip(zip_path: Path, dest: Path) -> None:
     zip_path.unlink(missing_ok=True)
 
 def download(model_id: str) -> None:
-    m = next((m for m in MODELS if m["id"] == model_id), None)
+    m = next((x for x in models() if x["id"] == model_id), None)
     if not m:
         DL.update(error=f"未知模型 {model_id}")
         return

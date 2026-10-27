@@ -60,6 +60,16 @@ def _providers() -> list[str]:
     """EP 顺序由显卡厂商决定（见 hardware.py），CPU 兜底。"""
     return hardware.ranked_providers()
 
+def reset_cache() -> None:
+    """丢掉已加载的模型实例。
+
+    切换数据根后必须调用：_FACES 是全局单例，内部绑定了旧的模型目录。
+    不清掉就会出现"目录已经切到新盘，但推理还在读旧盘的权重"。
+    """
+    global _FACES
+    _FACES = None
+
+
 def _get():
     global _FACES
     if _FACES is not None:

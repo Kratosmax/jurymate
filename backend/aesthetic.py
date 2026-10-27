@@ -30,6 +30,16 @@ def _assert_installed() -> None:
             "审美评分 MUSIQ", "权重文件缺失",
             "请在首页「模型就绪检查」里点下载（支持镜像与代理）")
 
+def reset_cache() -> None:
+    """丢掉已加载的评分器。
+
+    同 faces.reset_cache：切换数据根后 _predictor 仍绑在旧权重路径上，
+    不清就会出现"目录切了、评分还在用旧盘的模型"。
+    """
+    global _predictor
+    _predictor = None
+
+
 def _get():
     global _predictor
     if _predictor is not None:
