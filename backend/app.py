@@ -498,6 +498,18 @@ def organize():
     dry = bool((request.json or {}).get("dry"))
     plan = {"winners": 0, "rejects": 0, "pending_kept": 0, "skipped_conflict": 0}
     moves = []  # (src, dst)
+
+    # 先把目录内容索引一次，供下面查找同 stem 的 sidecar / JPG 双拍。
+    # 原来是在每张照片的循环里调 folder.iterdir()，1000 张就要扫 1000 遍
+    # 整个目录（O(n²)），千张规模下会卡到界面假死。
+    by_stem: dict[str, list[Path]] = {}
+    try:
+        for f in folder.iterdir():
+            if f.is_file():
+                by_stem.setdefault(f.stem.upper(), []).append(f)
+    except OSError as e:
+        log.warning("organize: 列目录失败，按无 sidecar 处理：%s", e)
+
     for ph in STATE["photos"]:
         if ph["status"] == "pending":
             plan["pending_kept"] += 1
@@ -511,11 +523,11 @@ def organize():
         ddir = folder / dest
         stem_u = src.stem.upper()
         group_files = {src}
-        for f in folder.iterdir():
-            if not f.is_file() or f == src:
+        for f in by_stem.get(stem_u, ()):
+            if f == src:
                 continue
             if (f.name.upper() == stem_u + ".XMP"
-                    or (f.stem.upper() == stem_u and f.suffix.lower() in (".jpg", ".jpeg"))):
+                    or f.suffix.lower() in (".jpg", ".jpeg")):
                 group_files.add(f)
         for c in ph.get("companions", []):
             cp = Path(c)
