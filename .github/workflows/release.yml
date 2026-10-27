@@ -112,6 +112,15 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path build-backend, dist-backend | Out-Null
+          # torchvision 的 _C_stable.pyd 必须显式带上：torchvision.extension
+          # 用 torch.ops.load_library() 按**文件路径**加载它，而 onefile 下
+          # PyInstaller 不保证它落在 torchvision 包目录旁，运行时就报
+          #   RuntimeError: operator torchvision::nms does not exist
+          # 源码环境完全正常，只有打包版会崩。配套用了 runtime hook 兜底。
+          $tvPkg = python -c "import torchvision,os;print(os.path.dirname(torchvision.__file__))"
+          $tvC = Join-Path $tvPkg.Trim() "_C_stable.pyd"
+          if (-not (Test-Path $tvC)) { throw "找不到 torchvision 的 _C_stable.pyd: $tvC" }
+          Write-Host "torchvision C 扩展: $tvC"
           Push-Location build-backend
           try {
             python -m PyInstaller --name jury-backend --onefile ../backend/app.py `
@@ -125,8 +134,12 @@ jobs:
               --hidden-import=insightface.utils.face_align `
               --hidden-import=pyiqa.archs.musiq_arch `
               --hidden-import=onnxruntime.capi.onnxruntime_pybind11_state `
+              --hidden-import=torchvision.extension `
+              --hidden-import=torchvision._internally_replaced_utils `
               --collect-binaries=mediapipe `
-              --collect-data=mediapipe
+              --collect-data=mediapipe `
+              --add-binary="$tvC;torchvision" `
+              --runtime-hook="../scripts/pyi-rthook-torchvision.py"
             if ($LASTEXITCODE -ne 0) { throw "PyInstaller 失败" }
           } finally { Pop-Location }
 
