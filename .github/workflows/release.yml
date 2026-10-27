@@ -5,6 +5,11 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "只验证构建与校验，不创建 Release（用于验证 CI 本身）"
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -38,20 +43,32 @@ jobs:
           workspaces: src-tauri
 
       # 版本唯一来源：src-tauri/tauri.conf.json。标签必须与之完全一致。
+      #
+      # 手动触发（workflow_dispatch）时 GITHUB_REF_NAME 是分支名而非标签，
+      # 拿它比对必然失败。这种情况跳过标签比对，只校验三个文件内部一致。
       - name: Verify tag matches version
         shell: bash
         run: |
           CONF_VER=$(node -p "require('./src-tauri/tauri.conf.json').version")
           PKG_VER=$(node -p "require('./package.json').version")
           CARGO_VER=$(grep -m1 '^version' src-tauri/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
-          TAG_VER="${GITHUB_REF_NAME#v}"
-          echo "conf=$CONF_VER pkg=$PKG_VER cargo=$CARGO_VER tag=$TAG_VER"
-          for v in "$PKG_VER" "$CARGO_VER" "$TAG_VER"; do
+          echo "conf=$CONF_VER pkg=$PKG_VER cargo=$CARGO_VER ref=$GITHUB_REF_NAME"
+          for v in "$PKG_VER" "$CARGO_VER"; do
             if [ "$v" != "$CONF_VER" ]; then
               echo "::error::版本不一致：tauri.conf.json=$CONF_VER 但 $v 不匹配"
               exit 1
             fi
           done
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            TAG_VER="${GITHUB_REF_NAME#v}"
+            if [ "$TAG_VER" != "$CONF_VER" ]; then
+              echo "::error::标签版本 $TAG_VER 与 tauri.conf.json $CONF_VER 不一致"
+              exit 1
+            fi
+            echo "标签校验通过：v$TAG_VER"
+          else
+            echo "非标签触发（$GITHUB_REF_TYPE），跳过标签比对；三处文件版本一致：$CONF_VER"
+          fi
 
       - name: Install frontend deps
         run: npm ci
@@ -233,7 +250,11 @@ jobs:
           '
           cat out/latest.json
 
+      # dry_run（或非标签触发）时只校验产物，不创建 Release。
+      # 这样可以在不打标签的前提下把整条 CI 链路真跑一遍——
+      # 否则"CI 能不能过"永远只能等真正发布时才知道，一次白等 20 分钟。
       - name: Create Release
+        if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
         uses: softprops/action-gh-release@v2
         with:
           name: JuryMate ${{ github.ref_name }}
@@ -248,9 +269,22 @@ jobs:
             out/SHA256SUMS.txt
 
       - name: Verify release assets
+        if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release view "$GITHUB_REF_NAME" --json assets \
             --jq '.assets[] | "\(.name)\t\(.size)"'
+
+      # dry-run 的产出清单：即使不发布，也要能看到"该发的 5 个资产都在"
+      - name: Dry-run summary
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run != false }}
+        shell: bash
+        run: |
+          echo "=== dry-run：不创建 Release，仅列出将被发布的资产 ==="
+          ls -lh out/
+          test -f out/latest.json || { echo "::error::缺少 latest.json"; exit 1; }
+          ls out/*-setup.exe >/dev/null || { echo "::error::缺少 setup.exe"; exit 1; }
+          ls out/*-setup.exe.sig >/dev/null || { echo "::error::缺少 .sig"; exit 1; }
+          echo "dry-run 通过：构建、doctor、签名、清单全部正常"
