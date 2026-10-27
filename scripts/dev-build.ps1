@@ -172,15 +172,22 @@ Say ("sidecar {0:N1} MB" -f ((Get-Item $exe).Length / 1MB)) Green
 # 分析看不到，源码跑一万遍也发现不了，只有产物自己 import 一次才知道。
 # 0.1.9 就是本地全绿、装好一点整理就崩，所以这一步必须在打包安装器之前做。
 Say "sidecar 运行期依赖自检"
-$prevEap = $ErrorActionPreference
-$ErrorActionPreference = 'Continue'
-try {
-    & $exe --doctor *> (Join-Path $logs "doctor.log")
-    $docCode = $LASTEXITCODE
-} finally { $ErrorActionPreference = $prevEap }
-if ($docCode -ne 0) {
-    Get-Content (Join-Path $logs "doctor.log") -Tail 30 | ForEach-Object { "    $_" }
-    throw "sidecar --doctor 未通过（退出码 $docCode）：打包缺少运行期依赖，详见 temp\logs\doctor.log"
+$docLog = Join-Path $logs "doctor.log"
+Remove-Item $docLog -Force -ErrorAction SilentlyContinue
+# 必须用 Start-Process -Wait：sidecar 是 --windowed（GUI 子系统），
+# 在 PowerShell 里用 & 直接调用会**立即返回**，$LASTEXITCODE 拿不到真值、
+# 日志也来不及产出。实测：& 调用时退出码为空且 doctor.log 不生成；
+# Start-Process -Wait 时退出码 0 且文件正常。这就是 CI 里
+# "doctor 像是通过了但日志里看不到任何输出"的真正原因。
+$docProc = Start-Process -FilePath $exe `
+    -ArgumentList @("--doctor", "--doctor-out", $docLog) `
+    -PassThru -Wait -WindowStyle Hidden
+if (-not (Test-Path $docLog)) {
+    throw "doctor 未产出 $docLog（退出码 $($docProc.ExitCode)），无法确认自检真的执行了"
+}
+Get-Content $docLog | ForEach-Object { Write-Host "    $_" }
+if ($docProc.ExitCode -ne 0) {
+    throw "sidecar --doctor 未通过（退出码 $($docProc.ExitCode)）：打包缺少运行期依赖"
 }
 Write-Host "    doctor 通过：运行期依赖齐全" -ForegroundColor DarkGray
 

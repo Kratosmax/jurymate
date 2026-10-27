@@ -897,10 +897,24 @@ if __name__ == "__main__":
     # （fcntl/wandb/albumentations…）干扰。真正可靠的做法是让产物自己
     # 试着 import 一次，失败就报错——CI 里跑这一句就够。
     ap.add_argument("--doctor", action="store_true")
+    # 显式指定 doctor 结果落盘位置。CI 里数据目录是默认位置（%LOCALAPPDATA%），
+    # 传一个固定路径省得去猜、也便于构建脚本直接读。
+    ap.add_argument("--doctor-out", default="")
     args = ap.parse_args()
 
     if args.doctor:
         import importlib
+
+        # 结果必须**落文件**：正式 sidecar 是 --windowed 打包，没有控制台，
+        # print() 无处可去（文件最前面已把 stdout 换成黑洞）。
+        # 只靠 print 的话 CI 日志里什么都看不到，"断言通过"就变成了
+        # "什么都没检查也可能通过"——实测踩到过。
+        lines: list[str] = []
+
+        def say(msg: str) -> None:
+            lines.append(msg)
+            print(msg)
+
         checks = [
             ("mediapipe", "闭眼检测"),
             ("mediapipe.tasks", "闭眼检测"),
@@ -921,10 +935,10 @@ if __name__ == "__main__":
         for mod, purpose in checks:
             try:
                 importlib.import_module(mod)
-                print(f"[ OK ] {mod:32s} {purpose}")
+                say(f"[ OK ] {mod:32s} {purpose}")
             except Exception as e:
                 failed.append((mod, purpose, e))
-                print(f"[FAIL] {mod:32s} {purpose}  -> {e}")
+                say(f"[FAIL] {mod:32s} {purpose}  -> {e}")
         # torchvision 的 C++ 扩展是单独 load_library 的，import 成功不代表
         # nms 算子可用（0.1.9 就是这样漏过检查的），必须实调一次。
         try:
@@ -933,15 +947,32 @@ if __name__ == "__main__":
             _ = torch.ops.torchvision.nms(
                 torch.tensor([[0., 0., 10., 10.]]),
                 torch.tensor([0.9]), 0.5)
-            print(f"[ OK ] {'torchvision::nms':32s} 检测框后处理")
+            say(f"[ OK ] {'torchvision::nms':32s} 检测框后处理")
         except Exception as e:
             failed.append(("torchvision::nms", "检测框后处理", e))
-            print(f"[FAIL] {'torchvision::nms':32s} 检测框后处理  -> {e}")
+            say(f"[FAIL] {'torchvision::nms':32s} 检测框后处理  -> {e}")
 
         if failed:
-            print(f"\nDOCTOR FAILED: {len(failed)} 项不可用")
-            sys.exit(1)
-        print("\nDOCTOR OK: 全部可用")
+            say(f"\nDOCTOR FAILED: {len(failed)} 项不可用")
+            code = 1
+        else:
+            say("\nDOCTOR OK: 全部可用")
+            code = 0
+
+        # 写文件：CI 与本地构建都读它来举证（也便于用户排查）
+        try:
+            if args.doctor_out:
+                out = __import__("pathlib").Path(args.doctor_out)
+            else:
+                import paths as _p
+                out = _p.data_dir() / "logs" / "doctor.log"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            print(f"doctor 结果已写入 {out}")
+        except Exception as e:
+            print(f"doctor 结果写文件失败（不影响判定）：{e}")
+
+        sys.exit(code)
         sys.exit(0)
 
     # 端口被占（双开/僵尸进程）自动顺延——实测浏览器打开旧端口会白屏排查半天

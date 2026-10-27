@@ -138,9 +138,27 @@ jobs:
           # 也发现不了；而读 warn-*.txt 做文本匹配必然被无害的可选缺失
           # （fcntl/wandb/albumentations 等）干扰，写出来就是误报。
           # 实测：故意漏收 torchvision 时这里的退出码为 1。
-          & $exe --doctor
-          if ($LASTEXITCODE -ne 0) {
-            throw "sidecar --doctor 未通过：打包缺少运行期依赖（详见上面的 FAIL 行）"
+          #
+          # sidecar 是 --windowed 打包，没有控制台，print() 进不了 CI 日志
+          # （实测确认过：只看到源码回显、看不到 [ OK ] 行）。
+          # 所以必须把落盘的 doctor.log 打出来，否则"通过"可能是"根本没跑"。
+          # 必须 Start-Process -Wait：sidecar 是 GUI 子系统（--windowed），
+          # PowerShell 用 & 调用会立即返回，$LASTEXITCODE 不可靠、日志来不及
+          # 产出。实测：& 调用时 doctor.log 不生成；Start-Process -Wait 正常。
+          # 这是"doctor 像是通过了但日志里没输出"的真正原因。
+          $docLog = Join-Path (Get-Location) "doctor.log"
+          Remove-Item $docLog -Force -ErrorAction SilentlyContinue
+          $docProc = Start-Process -FilePath $exe `
+            -ArgumentList @("--doctor","--doctor-out",$docLog) `
+            -PassThru -Wait -WindowStyle Hidden
+          if (Test-Path $docLog) {
+            Write-Host "--- doctor.log ---"
+            Get-Content $docLog | ForEach-Object { Write-Host "    $_" }
+          } else {
+            throw "doctor 未产出 doctor.log（退出码 $($docProc.ExitCode)），无法确认自检真的执行了"
+          }
+          if ($docProc.ExitCode -ne 0) {
+            throw "sidecar --doctor 未通过（退出码 $($docProc.ExitCode)）：打包缺少运行期依赖"
           }
 
           # 防回归：确认是 GUI 子系统（Subsystem=2），否则用户会看到控制台黑窗。
