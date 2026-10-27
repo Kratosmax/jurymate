@@ -229,10 +229,15 @@ jobs:
       - name: Generate updater manifest
         shell: bash
         env:
+          # 版本取 tauri.conf.json 而非 ref_name：
+          # workflow_dispatch 触发时 ref_name 是分支名（如 master），
+          # 拼出来会变成 releases/download/vmaster/… 这种坏 URL。
+          # 标签触发时两者一致，所以统一用文件里的版本更稳。
           VER: ${{ github.ref_name }}
         run: |
-          VER="${VER#v}"
+          VER="$(node -p "require('./src-tauri/tauri.conf.json').version")"
           export VER
+          echo "清单版本: $VER（来源 tauri.conf.json，而非 ref=${{ github.ref_name }}）"
           node -e '
             const fs=require("fs"),crypto=require("crypto"),path=require("path");
             const out="out", ver=process.env.VER;
