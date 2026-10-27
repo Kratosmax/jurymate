@@ -97,14 +97,13 @@ jobs:
         run: npm run tauri build
 
       # 必须连同 .sig 一起收集：latest.json 要用它，缺了会被下面的步骤拒绝
+      # 只收 NSIS：更新器只用 setup.exe，MSI 与它功能重叠且多 457MB，已停发
       - name: Collect artifacts
         shell: bash
         run: |
           mkdir -p out
           cp src-tauri/target/release/bundle/nsis/*-setup.exe out/ 2>/dev/null || true
           cp src-tauri/target/release/bundle/nsis/*-setup.exe.sig out/ 2>/dev/null || true
-          cp src-tauri/target/release/bundle/msi/*.msi out/ 2>/dev/null || true
-          cp src-tauri/target/release/bundle/msi/*.msi.sig out/ 2>/dev/null || true
           echo "--- 收集到的文件 ---"
           ls -lh out/
           if ! ls out/*-setup.exe.sig >/dev/null 2>&1; then
@@ -129,7 +128,7 @@ jobs:
         shell: pwsh
         run: |
           $lines = Get-ChildItem out -File |
-            Where-Object { $_.Extension -in '.exe','.msi','.zip' } |
+            Where-Object { $_.Extension -in '.exe','.zip' } |
             ForEach-Object {
               $h = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
               "$h  $($_.Name)"
@@ -190,7 +189,6 @@ jobs:
           prerelease: false
           files: |
             out/*.exe
-            out/*.msi
             out/*.zip
             out/*.sig
             out/latest.json

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { api } from './api'
 import { check, type Update } from '@tauri-apps/plugin-updater'
 import { relaunch } from '@tauri-apps/plugin-process'
@@ -15,6 +15,20 @@ const updGot = ref(0)
 const updTotal = ref(0)
 const updPct = computed(() =>
   updTotal.value ? Math.min(99, Math.round((updGot.value / updTotal.value) * 100)) : 0)
+
+// 设置页要用到这些状态与动作。用 reactive 包一层：ref 塞进普通对象传给
+// 子组件不会自动解包，子组件读到的是 Ref 对象而不是值。
+const updaterApi = reactive({
+  APP_VERSION,
+  get updateInfo() { return updateInfo.value },
+  get updating() { return updating.value },
+  get updStage() { return updStage.value },
+  get updGot() { return updGot.value },
+  get updTotal() { return updTotal.value },
+  get updPct() { return updPct.value },
+  checkUpdate: (silent: boolean) => checkUpdate(silent),
+  doUpdate: () => doUpdate(),
+})
 
 // 更新器默认只认系统代理，不认应用内「网络设置」的代理——用户明明配了代理、
 // 模型能下，检查更新却失败。这里把同一份设置显式传给更新器。
@@ -38,15 +52,6 @@ async function updaterProxy(): Promise<string | undefined> {
 /** 网络设置变更后清掉缓存，让下次检查更新用新代理。 */
 function invalidateProxy() { cachedProxy = undefined }
 
-// 侧栏「存储位置」：跳到首页并展开对应折叠面板。
-// 面板在首页模型区块里，正常情况下只在模型缺失时显示，
-// 所以需要显式打开，否则用户根本找不到入口。
-// 注意：page 在下方才定义，这里只置标志，由 go() 负责切页。
-const wantPathsPanel = ref(false)
-function openPaths() {
-  wantPathsPanel.value = true
-  go('home')
-}
 
 async function checkUpdate(silent: boolean) {
   try {
@@ -107,8 +112,9 @@ import HomeView from './views/HomeView.vue'
 import DecideView from './views/DecideView.vue'
 import WinnersView from './views/WinnersView.vue'
 import ReviewView from './views/ReviewView.vue'
+import SettingsView from './views/SettingsView.vue'
 
-type Page = 'home' | 'pk' | 'winners' | 'review'
+type Page = 'home' | 'pk' | 'winners' | 'review' | 'settings'
 const page = ref<Page>('home')
 const S = ref<import('./api').State | null>(null)
 const toastMsg = ref('')
@@ -159,39 +165,23 @@ onMounted(() => {
     <div class="side-foot">
       <div class="tagline">全本地推理 · 零 token</div>
       <div><kbd>?</kbd> 快捷键 · <kbd>1-4</kbd> 切页</div>
-      <div style="margin-top:6px">
-        <button class="ghost" style="padding:3px 10px;font-size:11px" :disabled="updating"
-                @click="checkUpdate(false)">检查更新</button>
-        <button v-if="updateInfo" class="act" style="padding:3px 10px;font-size:11px"
-                :disabled="updating" @click="doUpdate">
-          {{ updating ? (updStage || '更新中…') : `升级到 v${updateInfo.version}` }}
+      <div style="margin-top:8px">
+        <button class="nav-item" :class="{ on: page === 'settings' }" @click="go('settings')">
+          设置
+          <span class="k">5</span>
         </button>
       </div>
-      <div style="margin-top:6px">
-        <button class="ghost" style="padding:3px 10px;font-size:11px"
-                @click="openPaths">存储位置</button>
-      </div>
       <div style="margin-top:6px;font-size:10px;opacity:.6">v{{ APP_VERSION }}</div>
-    </div>
-    <div v-if="updating && updStage" class="hintbar" style="margin:10px 16px 0">
-      {{ updStage }}
-      <template v-if="updTotal">
-        {{ updPct }}%（{{ (updGot / 1048576).toFixed(0) }} / {{ (updTotal / 1048576).toFixed(0) }} MB）
-      </template>
-      <div class="prog" style="margin-top:6px"><div :style="{ width: updPct + '%' }" /></div>
-    </div>
-    <div v-if="updateInfo && !updating" class="hintbar" style="margin:14px 16px 0">
-      可更新到 v{{ updateInfo.version }}{{ updateInfo.body ? '：' + updateInfo.body.slice(0, 120) : '' }}
     </div>
   </nav>
   <div class="main">
     <div class="view-host">
-      <HomeView v-show="page === 'home'" :state="S" @go="go" @toast="toast" @refresh="refresh"
-                @netsaved="invalidateProxy" :open-paths="wantPathsPanel"
-                @pathsopened="wantPathsPanel = false" />
+      <HomeView v-show="page === 'home'" :state="S" @go="go" @toast="toast" @refresh="refresh" />
       <DecideView v-show="page === 'pk'" :state="S" @done="refresh" @toast="toast" />
       <WinnersView v-show="page === 'winners'" :state="S" @changed="refresh" @toast="toast" />
       <ReviewView v-show="page === 'review'" :state="S" @changed="refresh" @toast="toast" />
+      <SettingsView v-show="page === 'settings'" @toast="toast" @netsaved="invalidateProxy"
+                    :updater="updaterApi" />
     </div>
   </div>
   <transition name="toast">

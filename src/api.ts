@@ -58,6 +58,33 @@ async function initBase() {
   await baseReady
 }
 
+/**
+ * 等后端真正可服务。
+ *
+ * 后端是 PyInstaller onefile，冷启动要把约 1.1GB 运行时解压出来，
+ * 实测可到 20 秒以上。此前页面在端口起来之前就发请求，全部失败，
+ * 界面显示成空值（例如「当前目录 —」），用户以为功能坏了。
+ */
+let backendReady: Promise<boolean> | null = null
+async function waitBackend(timeoutMs = 60000): Promise<boolean> {
+  if (!backendReady) {
+    backendReady = (async () => {
+      await initBase()
+      if (!BASE) return false
+      const deadline = Date.now() + timeoutMs
+      while (Date.now() < deadline) {
+        try {
+          const r = await fetch(BASE + '/api/state', { method: 'GET' })
+          if (r.ok) return true
+        } catch { /* 还没起来，继续等 */ }
+        await new Promise(res => setTimeout(res, 800))
+      }
+      return false
+    })()
+  }
+  return backendReady
+}
+
 async function req<T = any>(path: string, body?: unknown, method?: string): Promise<T> {
   await initBase()
   let r: Response
@@ -70,8 +97,7 @@ async function req<T = any>(path: string, body?: unknown, method?: string): Prom
   } catch (e) {
     // 网络层失败（sidecar 未起/被墙）也归一为业务错误形状
     return { ok: false, error: `无法连接后端服务（${e}）` } as any
-  }
-  if (!r.ok && !(r.headers.get('content-type') ?? '').includes('json')) {
+  }  if (!r.ok && !(r.headers.get('content-type') ?? '').includes('json')) {
     return { ok: false, error: `HTTP ${r.status}` } as any
   }
   return r.json()
@@ -82,6 +108,8 @@ function absT(p: Photo): Photo {
     ? { ...p, thumb_view: BASE + p.thumb_view, thumb_grid: BASE + p.thumb_grid }
     : p
 }
+
+export { waitBackend }
 
 export const api = {
   async state(): Promise<State> {

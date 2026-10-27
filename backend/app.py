@@ -505,55 +505,102 @@ def models_download():
 def paths_api():
     """查询 / 切换数据根目录。
 
-    GET 返回当前生效值与每个子目录的实际位置、占用大小；
-    POST 校验目标可写后写配置。切换只影响之后产生的文件——已经下载的
-    模型留在旧位置，因为搬 440MB 权重既慢又可能中断，不如让用户自己决定
-    （界面上给出提示和旧路径）。
+    GET  返回当前生效值、每个子目录的实际位置与占用。
+    POST 校验目标可写后**自动把旧目录的数据迁移过去**，再写配置。
+
+    为什么要自动迁移：只改配置不搬数据的话，用户会看到"占用了 4GB"但
+    新目录是空的，旧目录还占着地方且界面上不再提到它——等于把文件藏起来。
+    模型 440MB 重新下载对用户是实打实的代价，不该让他自己搬。
     """
     if request.method == "POST":
         body = request.json or {}
         raw = (body.get("data_root") or "").strip()
-        if not raw:
-            paths.write_conf(data_root="")
-            log.info("paths: 恢复默认 %s", paths.default_root())
-            return jsonify({"ok": True, "data_root": str(paths.data_dir())})
+        old_root = paths.data_dir()
 
-        target = Path(raw).expanduser()
-        if not target.is_absolute():
-            return jsonify({"ok": False, "error": "必须填绝对路径"}), 400
-        # 校验可写：建目录 + 试写一个探测文件
+        if not raw:
+            new_root = paths.default_root()
+        else:
+            new_root = Path(raw).expanduser()
+            if not new_root.is_absolute():
+                return jsonify({"ok": False, "error": "必须选绝对路径"}), 400
+
         try:
-            target.mkdir(parents=True, exist_ok=True)
-            probe = target / ".jurymate-write-test"
+            if new_root.resolve() == old_root.resolve():
+                return jsonify({"ok": True, "data_root": str(new_root),
+                                "migrated": [], "skipped": []})
+        except Exception:
+            pass
+
+        # 校验可写：建目录 + 试写探测文件
+        try:
+            new_root.mkdir(parents=True, exist_ok=True)
+            probe = new_root / ".jurymate-write-test"
             probe.write_text("ok", encoding="utf-8")
             probe.unlink()
         except Exception as e:
             return jsonify({"ok": False, "error": f"目录不可写：{e}"}), 400
-        # 拒绝把数据目录放进程序安装目录：卸载时会连数据一起删掉
-        paths.write_conf(data_root=str(target))
-        log.info("paths: 数据根切到 %s", target)
-        return jsonify({"ok": True, "data_root": str(target)})
 
-    def size_of(p: Path) -> int:
-        try:
-            return sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
-        except Exception:
-            return 0
+        # 迁移旧的子目录。tmp 不搬：里面是 PyInstaller 的临时解压产物，
+        # 正被当前进程使用，搬它要拖几 GB 且毫无价值。
+        migrated, skipped = [], []
+        if old_root.exists() and old_root != new_root:
+            for key, label in _DATA_SUBDIRS:
+                if key == "tmp":
+                    continue
+                src_dir = old_root / key
+                if not src_dir.exists():
+                    continue
+                dst_dir = new_root / key
+                try:
+                    if dst_dir.exists() and any(dst_dir.iterdir()):
+                        skipped.append({"key": key, "label": label,
+                                        "reason": "目标已有同名非空目录"})
+                        continue
+                    shutil.move(str(src_dir), str(dst_dir))
+                    migrated.append({"key": key, "label": label})
+                except Exception as e:
+                    skipped.append({"key": key, "label": label,
+                                    "reason": str(e)[:120]})
 
+        paths.write_conf(data_root="" if not raw else str(new_root))
+        log.info("paths: %s -> %s (migrated=%d skipped=%d)",
+                 old_root, new_root, len(migrated), len(skipped))
+        return jsonify({"ok": True, "data_root": str(new_root),
+                        "migrated": migrated, "skipped": skipped,
+                        "old_root": str(old_root)})
+
+    return jsonify(_paths_payload())
+
+
+# 数据根下的子目录：(键, 中文名)。tmp 是进程临时区，不参与迁移。
+_DATA_SUBDIRS = (
+    ("logs", "日志"),
+    ("torch", "审美模型缓存"),
+    ("insightface", "人脸模型"),
+    ("tmp", "临时解压"),
+)
+
+
+def _dir_size(p: Path) -> int:
+    try:
+        return sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
+    except Exception:
+        return 0
+
+
+def _paths_payload() -> dict:
     root = paths.data_dir()
-    subs = []
-    for key, label in (("logs", "日志"), ("torch", "审美模型缓存"),
-                       ("insightface", "人脸模型"), ("tmp", "临时解压")):
-        p = root / key
-        subs.append({"key": key, "label": label, "path": str(p),
-                     "size": size_of(p) if p.exists() else 0})
-    return jsonify({
+    subs = [{"key": k, "label": lb, "path": str(root / k),
+             "size": _dir_size(root / k) if (root / k).exists() else 0}
+            for k, lb in _DATA_SUBDIRS]
+    return {
         "data_root": str(root),
         "default_root": str(paths.default_root()),
         "is_default": root == paths.default_root(),
         "env_override": bool(os.environ.get("JURYMATE_DATA_DIR", "").strip()),
         "subdirs": subs,
-    })
+    }
+
 
 @app.route("/api/net/settings", methods=["GET", "POST"])
 def net_settings():

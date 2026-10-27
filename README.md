@@ -157,7 +157,7 @@ cd build-backend && pyinstaller --name jury-backend --onefile ../backend/app.py 
 npm run tauri build
 ```
 
-产物位置：`src-tauri/target/release/bundle/nsis/` 与 `bundle/msi/`。
+产物位置：`src-tauri/target/release/bundle/nsis/`。
 
 **测试**：
 
