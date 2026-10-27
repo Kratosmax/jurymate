@@ -71,21 +71,16 @@ CPU 永远兜底。首选 EP 没装时自动降级（N 卡只装了 DML 包仍�
 `models.detect()` 只转述 `hardware` 的结论，不再自己判断——避免出现
 "界面提示推荐 X、实际跑 Y"的分裂。
 
-## 2. 当前快照（最后核验 2026-10-26 21:xx）
+## 2. 当前快照（最后核验 2026-10-27 11:xx）
 
-- 版本：**0.1.3**（版本源 `src-tauri/tauri.conf.json`；`package.json`、
+- 版本：**0.1.5**（版本源 `src-tauri/tauri.conf.json`；`package.json`、
   `Cargo.toml`、`Cargo.lock` 必须同步，CI 会校验与标签一致）
 - 分支：master；remote：`origin` → https://github.com/Kratosmax/jurymate
-- 仓库：**PUBLIC**，标签已到 `v0.1.3`
-- 线上状态：**v0.1.3 已发布**
-  https://github.com/Kratosmax/jurymate/releases/tag/v0.1.3
-  - CI run 40324214220 success；7 个资产齐全（Setup/ZIP/MSI + 2×sig +
-    latest.json + SHA256SUMS.txt）
-  - latest.json: version=0.1.3，载体为 NSIS setup.exe，签名 key id
-    fad7706de1435f20 与 tauri.conf.json 公钥一致（已核验）
-  - releases/latest 实际指向 v0.1.3
-- 自动更新：0.1.2 起文件锁问题已修，0.1.2 及以后可应用内升级；
-  **0.1.0/0.1.1 必须手动装一次**（历史遗留，服务端无法修复）
+- 仓库：**PUBLIC**，标签已到 `v0.1.5`
+- 线上最新：v0.1.5（0.1.4 及以前均已发布）
+- **自动更新已端到端验证通过**（0.1.3 → 0.1.4，真机、无弹窗、版本正确）。
+  0.1.0–0.1.4 升级都会卡在文件占用，**必须手动安装 0.1.5 一次**；
+  0.1.5 之后的版本可应用内直接升级
 - **待用户**：提供 2-3 张正面人像含闭眼样本（闭眼阈值真数据校准）
 ### 发布方式
 
@@ -110,9 +105,9 @@ CPU 永远兜底。首选 EP 没装时自动降级（N 卡只装了 DML 包仍�
 ## 3. 当前待办
 
 1. 【待用户】正面人像含闭眼样本 → EAR 阈值真数据校准
-2. debug 后端（`jury-backend-debug.exe`）未随包分发，`bundle.resources`
-   只映射正式版；lib.rs 已做"debug 缺失回退正式版"，若要真正用 debug
-   模式需补资源映射
+2. debug 后端（`jury-backend-debug.exe`）未随包分发。已评估后放弃：
+   双 exe 会让安装包从 457MB 翻倍到约 914MB，对个人使用不划算；
+   需要看后端输出的人直接用源码跑 `backend/app.py` 即可
 3. `%TEMP%\_MEI*` 残留：onefile 每次启动解压约 1.1GB，被强杀时不清理。
    实测累积 27 个 / 27.45GB 挤爆系统盘（C 盘只剩 0.1GB）。
    **尝试过的方案失败了**：在 `paths.py` 加启动时 `_cleanup_mei_dirs()`，
@@ -124,7 +119,6 @@ CPU 永远兜底。首选 EP 没装时自动降级（N 卡只装了 DML 包仍�
 5. P2：EXIF 相机水印；ArcFace 同人归组
 
 没有其他已授权未完成事项；上述之外等待用户需求，不自行扩大范围。
-
 ## 4. 关键入口
 
 | 职责 | 文件 |
@@ -193,55 +187,53 @@ CPU 永远兜底。首选 EP 没装时自动降级（N 卡只装了 DML 包仍�
 - 与 Git/源码/用户指示冲突时，以更新的可验证证据为准并修正本文件
 
 
-## 9. 会话交接（2026-10-26 21:xx）
+## 9. 会话交接（2026-10-27 11:xx）
 
-### 当前状态
+### 本会话最有价值的发现：更新器时序
 
-- **线上最新版本：v0.1.3**（已发布，资产 7 项齐全，签名 key id 匹配）
-- **master 最新提交：82dc06**（0.1.3 的发布提交是 36e3f47）
-- **工作区干净**
+自动更新卡在文件占用，根因是**执行顺序**，不是权限也不是 NSIS 问题：
 
-### 本会话完成的三项
+`
+updater.downloadAndInstall()
+  1. on_before_exit 钩子
+  2. 启动安装器 (spawn)      <-- 此刻应用还活着，sidecar 也活着
+  3. 应用退出 RunEvent::Exit  <-- 清理挂在这里已经太晚
+`
 
-| 版本 / 提交 | 内容 |
+0.1.2 把 `kill_backend` 挂在 `RunEvent::Exit`，0.1.5 改为前端在
+`downloadAndInstall` **之前**调 `prepare_update` 命令（杀进程 + 轮询
+确认 exe 可独占打开）。这是唯一在正确时机生效的位置。
+
+证据来源：`tauri-plugin-updater-2.14.0/src/updater.rs` 第 1017–1019 行
+先调 `on_before_exit()` 再拼安装器参数并 spawn。
+
+### 已完成
+
+| 版本 | 内容 |
 |---|---|
-| v0.1.1 | 更新进度显示、版本号常驻、前后端版本一致性检查、首页崩溃修复 |
-| v0.1.2 (d06fe8) | **修复 sidecar 文件锁导致自动更新失败**——更新器报 "Error opening file for writing" |
-| v0.1.3 (36e3f47) | **更新检查接入应用内代理**；修复代理读取失败被永久缓存为空 |
-| 82dc06（未发版） | **禁止 insightface/pyiqa 自行联网下载模型**，缺失时明确报错引导用户走应用内下载器 |
-
-82dc06 已在 master 但未包含在任何 Release 里，下一个版本会自动带上。
-
-### 更新器代理：验证方法与结论
-
-改动的正确性用**客观证据**确认，不是看界面有没有反应：
-
-1. 起一个记录请求的 TCP 转发代理（监听 10809）
-2. 应用「网络设置」填 http://127.0.0.1:10809，**系统代理保持关闭**
-3. 点「检查更新」，代理端日志出现：
-   CONNECT github.com:443、CONNECT release-assets.githubusercontent.com:443
-4. 反向对照：把代理改成死端口 59999，检查更新报
-   error sending request for url (...)，证明参数确实被使用而非被忽略
+| v0.1.1 | 更新进度、版本号显示、前后端版本一致性检查、首页崩溃修复 |
+| v0.1.2 | 退出时清理 sidecar（时机错，未真正解决） |
+| v0.1.3 | 更新检查接入应用内代理；修复代理缓存污染 |
+| v0.1.4 | 消除启动控制台黑窗；修 `JURYMATE_DEBUG` 失效 |
+| a82dc06 | 禁止 insightface/pyiqa 自行联网下载模型 |
+| v0.1.5 | **prepare_update：自动更新真正跑通** |
 
 ### 踩过的坑（务必先读）
 
-1. **本地 
-pm run tauri build 不会重建 sidecar**，会复用 dist-backend/ 里的旧 exe，
-   得到"新后端 + 旧前端"。打包前必须手动跑 PyInstaller。
-   且 PyInstaller 见到产物存在会跳过，要先 Remove-Item dist-backend\jury-backend.exe。
-2. **%TEMP%\_MEI* 会吃光 C 盘**。onefile 每次启动解压约 1.1GB，被强杀时不清理。
-   实测累积 27 个共 27.45GB。开发期间频繁重启应用时，每隔一段时间清一次；
-   排查异常的 ENOSPC 报错时先看这里。**不要试图用运行中的 Python 进程去清理**
-   （试过，导致后端起不来，已回退，见待办 #3）。
-3. **Tauri 窗口标题改不动 document.title**。前端调试想输出信息，写进页面可见区域
-   （例如侧栏小字），不要用 document.title。
-4. **UIA 点击坐标要用 get_app_state(mode='text') 拿到的 rect**，别按截图估。
+1. **改 Rust 后忘了 `import sys` 会让后端起不来**，我却一度误判成
+   "`--windowed` 在 Windows 上不兼容"。实际 `--windowed` 完全可用。
+   排查后端启动失败时先直接跑 `python backend/app.py` 看 Traceback，
+   不要从打包参数上下结论。
+2. **本地 `npm run tauri build` 不会重建 sidecar**，且 PyInstaller 见到
+   产物存在会跳过，必须先 `Remove-Item dist-backend\jury-backend.exe`。
+3. **`%TEMP%\_MEI*` 会吃光 C 盘**（实测 27 个 / 27.45GB）。频繁重启应用
+   时每隔一段时间清一次。遇到 `ENOSPC` 先看这里。
+4. **Tauri 窗口标题改不动 `document.title`**。前端调试信息要写进页面可见
+   区域（例如侧栏小字），不要用 `document.title`。
+5. **UIA 点击坐标用 `get_app_state(mode='text')` 的 rect**，别按截图估——
    截图是缩放后的（1568×1026），实际窗口坐标可能是 1702×1114。
-5. **PowerShell 控制台中文乱码**是显示问题，文件本身正常。判断内容用 ead 工具
-   或 [IO.File]::ReadAllText(..., UTF8)。
-6. **git 历史不能带大文件**：dist-backend/、uild-backend/、	emp/ 已在 .gitignore。
-   历史曾因 457MB exe 膨胀到 2.9GB，用 ilter-branch 清理过。
+6. **PowerShell 控制台中文乱码**是显示问题，文件本身正常。
 
 ### 剩余待办
 
-见 §3。其中 #3（_MEI 残留根治）是有明确失败记录的，重试前先读那条记录。
+见 §3。其中 #3（`_MEI` 残留根治）有明确失败记录，重试前先读那条。
