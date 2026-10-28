@@ -348,6 +348,18 @@ def progress_api():
     return jsonify({k: TASK[k] for k in ("running", "done", "total", "stage",
                                              "error", "error_kind", "error_hint")})
 
+# 启动就绪状态：前端用它决定是否允许操作。
+# sidecar 是 PyInstaller onefile，启动要解压约 1.1GB，实测十几秒；
+# 这期间前端点「开始整理」是连不上端口的，用户看到的就是"点了没反应"。
+PRELOAD = {"model_ready": False, "model_error": ""}
+
+
+@app.route("/api/ready", methods=["GET"])
+def api_ready():
+    return jsonify({"ok": True, "model_ready": PRELOAD["model_ready"],
+                    "model_error": PRELOAD["model_error"]})
+
+
 @app.route("/api/state")
 def state_api():
     # 快照读：worker 线程可能正在原地扩展 photos/groups（增量扫描），
@@ -1070,8 +1082,10 @@ def _preload_aesthetic() -> None:
         # 这里必须自己导入，否则报 name 'aesthetic' is not defined。
         import aesthetic as _aesthetic
         _aesthetic._get()
+        PRELOAD["model_ready"] = True
         log.info("审美模型预加载完成")
     except Exception as e:
+        PRELOAD["model_error"] = str(e)
         log.info("审美模型预加载跳过（稍后按需加载）：%s", e)
 
 

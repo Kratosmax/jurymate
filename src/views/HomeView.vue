@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { api, type State } from '../api'
+import { api, waitBackend, type State } from '../api'
 
 const props = defineProps<{ state: State | null }>()
 const emit = defineEmits<{ go: [p: 'pk' | 'winners' | 'review']; toast: [m: string]; refresh: [] }>()
@@ -87,6 +87,8 @@ const dlId = ref('')
 const dlDone = ref(0)
 const dlTotal = ref(1)
 const errMsg = ref('')
+// 后端是否已起来：sidecar 解压约 1.1GB，启动十几秒内点按钮是没反应的
+const backendReady = ref(false)
   const errKind = ref('')
 const errHint = ref('')
 const showModels = ref(false)
@@ -101,7 +103,20 @@ const dlPct = computed(() => dlTotal.value ? Math.round(dlDone.value / dlTotal.v
 async function checkSys() {
   try { sys.value = await api.systemDetect() } catch {}
 }
-onMounted(checkSys)
+onMounted(async () => {
+  checkSys()
+  // 轮询 /api/ready，直到 sidecar 端口可用
+  for (let i = 0; i < 120; i++) {
+    try {
+      await waitBackend(2000)
+      backendReady.value = true
+      return
+    } catch {
+      await new Promise((r) => setTimeout(r, 500))
+    }
+  }
+  backendReady.value = true   // 超时也放行，让用户看到真实报错
+})
 
 async function dlModel(id: string) {
   dlRunning.value = true; dlId.value = id; dlDone.value = 0; dlTotal.value = 1
@@ -135,7 +150,7 @@ const etaText = () => {
         <input v-model="folder" type="text" style="width: 440px"
                placeholder="照片文件夹绝对路径，如 C:\Users\you\Pictures\xx" list="dirs" />
         <datalist id="dirs"><option v-for="d in recent" :key="d" :value="d" /></datalist>
-        <button class="act" :disabled="scanning" @click="start('full')"
+        <button class="act" :disabled="scanning || !backendReady" @click="start('full')"
                 title="读取已有结果，并自动补扫目录里新增的照片">开始整理</button>
         <button v-if="state?.photos?.length" class="ghost" :disabled="scanning"
                 :class="{ danger: confirmReset }"
@@ -148,6 +163,9 @@ const etaText = () => {
       <div v-if="confirmReset" class="hintbar" style="text-align:left;border-color:var(--warn)">
         将删除该目录的扫描结果、缩略图缓存与全部<b>人工标记</b>，然后从零重新扫描。
         已复制到 winners/ 的照片不会被动。
+      </div>
+      <div v-if="!backendReady" style="margin-top: 10px; font-size: 12px; color: var(--dim)">
+        <span class="spin" /> 正在启动，请稍候（首次启动要解压运行时，约十几秒）…
       </div>
       <div style="margin-top: 10px; font-size: 12px; color: var(--dim)">
         最近：<template v-for="(d, i) in recent.slice(0, 3)" :key="d"><a href="#"

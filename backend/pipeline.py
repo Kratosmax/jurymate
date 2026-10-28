@@ -267,7 +267,7 @@ def score_candidates(photos: list[dict], state_dir: Path, settings: dict,
                 progress(n + idx + 1, n * 2, ph["name"])
         return
     if progress:
-        progress(n, n * 2, "加载审美模型（首次约 20 秒）…")
+        progress(n, n * 2, "审美评分中…" if aesthetic.is_loaded() else "加载审美模型…")
     images = []
     for ph in todo:
         # thumb_view 形如 /thumbs/<stem>_<ext>/view.jpg，已含 thumbs 段，

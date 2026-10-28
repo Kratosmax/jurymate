@@ -13,6 +13,12 @@ import paths  # noqa: F401  导入即设 TORCH_HOME，必须早于 pyiqa/torch
 log = logging.getLogger("jurymate")
 
 _predictor = None
+# 预加载线程和扫描线程可能同时进来。没有锁时两边各创建一份 MUSIQ，
+# 各自要读 104MB 权重 + 初始化 torch（实测各约 60 秒），
+# 用户看到的就是"每次都卡在加载审美模型一分钟"。
+_load_lock = __import__("threading").Lock()
+_loading = __import__("threading").Event()
+
 
 # pyiqa 的权重落在 <数据目录>/torch/hub/pyiqa/<文件名>
 _MUSIQ_FILE = "musiq_koniq_ckpt-e95806b9.pth"
@@ -40,10 +46,26 @@ def reset_cache() -> None:
     _predictor = None
 
 
+def is_loaded() -> bool:
+    """模型是否已就绪（供进度文案区分"加载中"和"评分中"）。"""
+    return _predictor is not None
+
+
 def _get():
     global _predictor
     if _predictor is not None:
         return _predictor
+    # 双重检查：只有第一个线程真正加载，其余线程在这里等它加载完，
+    # 不会重复创建第二份模型。
+    with _load_lock:
+        if _predictor is not None:
+            return _predictor
+        _predictor = _load_locked()
+    return _predictor
+
+
+def _load_locked():
+    global _predictor
     try:
         import pyiqa
         import torch

@@ -58,9 +58,13 @@ watch(() => props.state, () => {
 })
 
 function followSel() {
-  // PK 模式：选中项可能在横向溢出区外，必须滚进视野，否则"选了但看不见"
-  const el = document.querySelectorAll('#pkStage .side')[sel.value] as HTMLElement | undefined
-  el?.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' })
+  // 两种模式都要跟随：
+  // - PK：选中项可能在横向溢出区外
+  // - 单图：底部缩略图条同样会溢出，选的图可能在可视区之外
+  const sel2 = mode.value === 'single'
+    ? document.querySelectorAll('.thumbs .thumb')[sel.value]
+    : document.querySelectorAll('#pkStage .side')[sel.value]
+  ;(sel2 as HTMLElement | undefined)?.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' })
 }
 
 function selDraw() {
