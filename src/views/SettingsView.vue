@@ -123,7 +123,10 @@ const netOrder = ref<'mirror_first' | 'direct_first'>('mirror_first')
 const netSavedMsg = ref('')
 
 // ---- 性能设置 ----
-const perf = ref({ scan_workers: 0, cpu_count: 8, auto_workers: 4 })
+// 别写假默认值：以前这里写死 cpu_count:8 / auto_workers:4，后端请求一失败
+// 界面就显示"本机 8 核 / 自动(4)"，用户以为自己机器被识别错了。
+// 现在 0 表示"还没读到"，界面显示「—」。
+const perf = ref({ scan_workers: 0, cpu_count: 0, auto_workers: 0 })
 async function loadPerf() {
   try {
     const p = await api.settingsGet()
@@ -236,6 +239,8 @@ async function confirmDownloadMode() {
 }
 
 async function saveWeight() {
+  // 拖动时 step=1 连续跟手，松手才吸附到 5 的倍数；后端仍只接受 5 的倍数
+  weight.value = Math.round(weight.value / 5) * 5
   const r = await api.settingsSave({ score_weight: weight.value })
   if (!r.ok) { emit('toast', r.error || '保存失败'); return }
   rescoreAsk.value = true
@@ -309,15 +314,26 @@ async function removeModel(id: string) {
   emit('toast', `已删除 ${modelName(id)} 模型`)
 }
 
-onMounted(async () => {
-
-  // 先等后端把 1.1GB 运行时解压完再取数据，否则整页都是空值
+const bootFailed = ref(false)
+async function boot() {
+  // 先等后端把 1.1GB 运行时解压完再取数据，否则整页都是空值。
+  // 首次安装后实测要 60~90 秒，这里把已等秒数显示出来，别让用户对着
+  // 一句「读取失败」发呆。
+  bootFailed.value = false
   pathErr.value = '正在等待后端启动（首次启动约需 20 秒）…'
-  const ok = await waitBackend().catch(() => false)
-  if (!ok) { pathErr.value = '后端未在预期时间内就绪，可稍后刷新本页'; return }
+  const ok = await waitBackend((s) => {
+    pathErr.value = `正在等待后端启动…已等 ${s} 秒（首次安装要解压约 1.1GB 运行时）`
+  }).catch(() => false)
+  if (!ok) {
+    bootFailed.value = true
+    pathErr.value = '后端未在预期时间内就绪'
+    return
+  }
   pathErr.value = ''
   await Promise.all([loadPaths(), loadNet(), loadPerf()]); checkSys()
-})
+}
+
+onMounted(boot)
 </script>
 
 <template>
@@ -386,7 +402,12 @@ onMounted(async () => {
     <section class="card">
       <h2>存储位置</h2>
 
-      <div v-if="pathErr" class="hintbar" style="border-color:var(--bad);margin-bottom:10px">读取路径失败：{{ pathErr }}</div>
+      <div v-if="pathErr" class="hintbar" :style="{ borderColor: bootFailed ? 'var(--bad)' : 'var(--line)', marginBottom: '10px' }">
+        {{ pathErr }}
+        <div v-if="bootFailed" style="margin-top:8px">
+          <button class="ghost" style="padding:3px 12px;font-size:12px" @click="boot">重试</button>
+        </div>
+      </div>
       <div v-if="pathsInfo?.env_override" class="hintbar" style="border-color:var(--warn);margin-bottom:10px">
         当前由环境变量 <code>JURYMATE_DATA_DIR</code> 指定，界面里的设置不会生效。
       </div>
@@ -563,6 +584,25 @@ onMounted(async () => {
       </div>
     </section>
 
+    <!-- 改完设置问一句要不要重算，否则用户会以为设置没生效。
+         放在评分模型卡片正下方——放页面底部时用户根本看不到。 -->
+    <section v-if="rescoreAsk" class="card" style="border-color:var(--acc)">
+      <div style="font-size:13px">
+        评分设置已更改，是否按新设置重新计算全部照片的分数？
+      </div>
+      <div class="dim" style="font-size:12px;margin-top:4px">
+        只是重算分数与分组结果，不会重新解压照片。
+      </div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="act" style="padding:4px 14px;font-size:12px" @click="doRescore">
+          重新计算
+        </button>
+        <button class="ghost" style="padding:4px 14px;font-size:12px" @click="rescoreAsk = false">
+          稍后再说
+        </button>
+      </div>
+    </section>
+
     <!-- 依赖模型 -->
     <section class="card">
       <h2>依赖模型</h2>
@@ -596,7 +636,13 @@ onMounted(async () => {
         ⓘ 拖动滑块调整「审美」与「清晰度」在综合分里的占比。
       </div>
       <div class="slider-wrap">
-        <input class="wslider" type="range" min="0" max="100" step="5"
+        <!-- 权重常驻显示：用户拖完必须一眼看到现在是什么比例 -->
+        <div class="wreadout">
+          审美 <b>{{ weight }}%</b><span class="sep">／</span>清晰 <b>{{ 100 - weight }}%</b>
+        </div>
+        <!-- step=1 让拖动连续跟手；松手时才吸附到 5 的倍数（见 saveWeight），
+             原生 step=5 会一格一格跳，看着像卡顿 -->
+        <input class="wslider" type="range" min="0" max="100" step="1"
                :style="{ '--fill': weight + '%', '--hue': Math.round(200 + weight * 0.8) }"
                v-model.number="weight" @change="saveWeight" />
         <div class="slider-labels">
@@ -610,24 +656,6 @@ onMounted(async () => {
       </div>
     </section>
 
-    <!-- 改完设置问一句要不要重算，否则用户会以为设置没生效 -->
-    <section v-if="rescoreAsk" class="card" style="border-color:var(--acc)">
-      <div style="font-size:13px">
-        评分设置已更改，是否按新设置重新计算全部照片的分数？
-      </div>
-      <div class="dim" style="font-size:12px;margin-top:4px">
-        只是重算分数与分组结果，不会重新解压照片。
-      </div>
-      <div style="display:flex;gap:8px;margin-top:12px">
-        <button class="act" style="padding:4px 14px;font-size:12px" @click="doRescore">
-          重新计算
-        </button>
-        <button class="ghost" style="padding:4px 14px;font-size:12px" @click="rescoreAsk = false">
-          稍后再说
-        </button>
-      </div>
-    </section>
-
     <!-- 性能 -->
     <section class="card">
       <h2>性能</h2>
@@ -635,7 +663,7 @@ onMounted(async () => {
         <div>
           <div style="font-size:13px">
             扫描并发线程数
-            <span class="dim" style="font-size:12px">（本机 {{ perf.cpu_count }} 核）</span>
+            <span class="dim" style="font-size:12px">（本机 {{ perf.cpu_count || '—' }} 核）</span>
           </div>
           <div class="dim" style="font-size:12px;margin-top:3px"
                title="解码是性能瓶颈；线程越多越快，但超过磁盘和内存带宽后会回落">

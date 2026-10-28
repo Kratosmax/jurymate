@@ -147,11 +147,11 @@ const S = ref<import('./api').State | null>(null)
 const toastMsg = ref('')
 let toastTimer: ReturnType<typeof setTimeout> | undefined
 
-const pages: { id: Page; label: string; key: string }[] = [
-  { id: 'home', label: '总览', key: '1' },
-  { id: 'pk', label: '决策', key: '2' },
-  { id: 'winners', label: '胜出', key: '3' },
-  { id: 'review', label: '复查', key: '4' },
+const pages: { id: Page; label: string }[] = [
+  { id: 'home', label: '总览' },
+  { id: 'pk', label: '决策' },
+  { id: 'winners', label: '胜出' },
+  { id: 'review', label: '复查' },
 ]
 
 function toast(m: string, ms = 3000) {
@@ -165,13 +165,18 @@ async function refresh() {
 function go(p: Page) {
   page.value = p
 }
-const pkBadge = computed(() => S.value?.groups.filter((g) => g.needs_pk).length ?? 0)
 
-// 1-4 切页（PK 页内部的方向键等由子组件自行监听）
-window.addEventListener('keydown', (e) => {
-  const tag = (document.activeElement as HTMLElement)?.tagName
-  if (tag === 'INPUT') return
-  if (e.key >= '1' && e.key <= '4') go(pages[Number(e.key) - 1].id)
+// 侧栏数字改成"这一页有多少东西"，比快捷键提示有用得多。
+// 决策页显示待拍板组数，其余显示照片张数。
+const navCount = computed<Record<string, number>>(() => {
+  const s = S.value
+  if (!s) return {} as Record<string, number>
+  return {
+    home: s.photos.length,
+    pk: s.groups.filter((g) => g.needs_pk).length,
+    winners: s.photos.filter((p) => p.status === 'winner').length,
+    review: s.photos.filter((p) => p.status === 'reject').length,
+  } as Record<string, number>
 })
 
 onMounted(() => {
@@ -191,16 +196,13 @@ onMounted(() => {
     <div class="brand-sub">AI 陪审 · 你是法官</div>
     <button v-for="p in pages" :key="p.id" class="nav-item" :class="{ on: page === p.id }" @click="go(p.id)">
       {{ p.label }}
-      <span v-if="p.id === 'pk' && pkBadge" class="badge">{{ pkBadge }}</span>
-      <span v-else class="k">{{ p.key }}</span>
+      <span v-if="navCount[p.id]" class="k">{{ navCount[p.id] }}</span>
     </button>
     <div class="side-foot">
       <div class="tagline">全本地推理 · 零 token</div>
-      <div><kbd>?</kbd> 快捷键 · <kbd>1-4</kbd> 切页</div>
       <div style="margin-top:8px">
         <button class="nav-item" :class="{ on: page === 'settings' }" @click="go('settings')">
           设置
-          <span class="k">5</span>
         </button>
       </div>
       <div style="margin-top:6px;font-size:10px;opacity:.6">v{{ APP_VERSION }}</div>

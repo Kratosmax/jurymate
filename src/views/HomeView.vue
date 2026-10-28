@@ -120,19 +120,13 @@ const dlPct = computed(() => dlTotal.value ? Math.round(dlDone.value / dlTotal.v
 async function checkSys() {
   try { sys.value = await api.systemDetect() } catch {}
 }
+const bootSecs = ref(0)
 onMounted(async () => {
   checkSys()
-  // 轮询 /api/ready，直到 sidecar 端口可用
-  for (let i = 0; i < 120; i++) {
-    try {
-      await waitBackend(2000)
-      backendReady.value = true
-      return
-    } catch {
-      await new Promise((r) => setTimeout(r, 500))
-    }
-  }
-  backendReady.value = true   // 超时也放行，让用户看到真实报错
+  // waitBackend 内部会一直重试到 180 秒，这里只把它等待的秒数透出来
+  const ok = await waitBackend((s) => { bootSecs.value = s }).catch(() => false)
+  backendReady.value = true   // 无论成败都放行，让用户看到真实报错/重试按钮
+  if (!ok) emit('toast', '后端启动较慢，稍后会自动重试')
 })
 
 async function dlModel(id: string) {
@@ -192,7 +186,7 @@ const etaText = () => {
         已复制到 winners/ 的照片不会被动。
       </div>
       <div v-if="!backendReady" style="margin-top: 10px; font-size: 12px; color: var(--dim)">
-        <span class="spin" /> 正在启动，请稍候（首次启动要解压运行时，约十几秒）…
+        <span class="spin" /> 正在启动后端，已等 {{ bootSecs }} 秒（首次安装要解压约 1.1GB 运行时，最长约 90 秒）…
       </div>
       <div style="margin-top: 10px; font-size: 12px; color: var(--dim)">
         最近：<template v-for="(d, i) in recent.slice(0, 3)" :key="d"><a href="#"

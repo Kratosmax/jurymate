@@ -21,20 +21,48 @@ const mode = ref<'pk' | 'single'>(saved === 'single' ? 'single' : 'pk')
 const takenIds = ref<Set<number>>(new Set())
 
 const group = computed(() => queue.value[pos.value] ?? null)
-const aiIdx = computed(() => {
-  const g = group.value
-  return g ? g.members.findIndex((m) => m.idx === g.winner) : -1
-})
 
-/** 当前还在候选池里的成员（单图模式会随挑选递减） */
-const pool = computed(() => {
+/** 组内按综合分从高到低排：用户希望"最左边就是最高分那张"。
+ *  PK 和单图两种模式都用这份顺序，保证 ←→ 走的就是分数顺序。 */
+const sorted = computed(() => {
   const g = group.value
   if (!g) return []
-  return g.members.filter((m) => !takenIds.value.has(m.idx))
+  return [...g.members].sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
 })
+const aiIdx = computed(() => sorted.value.findIndex((m) => m.idx === group.value?.winner))
+
+/** 当前还在候选池里的成员（单图模式会随挑选递减） */
+const pool = computed(() => poolOf(sorted.value, takenIds.value))
+
+function poolOf(list: readonly any[], taken: Set<number>) {
+  return list.filter((m) => !taken.has(m.idx))
+}
 
 /** 单图模式当前显示的那张 */
 const cur = computed(() => pool.value[Math.min(sel.value, pool.value.length - 1)] ?? null)
+
+/** 这一张身上有哪些可读的标签：技术淘汰原因 + 人脸 + 分数。
+ *  "离线模型出了什么就标什么"——失焦/闭眼/过曝/欠曝/偏软/低分/组内落选。 */
+const HARD = new Set(['失焦', '闭眼', '过曝', '欠曝'])
+function tagsOf(m: any): { text: string; hard: boolean }[] {
+  const out: { text: string; hard: boolean }[] = []
+  for (const r of (m.reject_reasons ?? [])) {
+    out.push({ text: r, hard: HARD.has(r) })
+  }
+  if (m.n_faces) out.push({ text: `${m.n_faces} 脸`, hard: false })
+  else out.push({ text: '无脸', hard: false })
+  return out
+}
+/** 分项分数串：审美优先给审美+清晰，画质优先只给画质 */
+function scoreLine(m: any): string {
+  const total = m.score != null ? Math.round(m.score) : '—'
+  if (props.state?.score_mode === 'quality') {
+    return `★ ${total} ｜ 画质 ${m.aesthetic != null ? Math.round(m.aesthetic) : '—'}`
+  }
+  const a = m.aesthetic != null ? Math.round(m.aesthetic) : '—'
+  const s = m.sharp_score != null ? Math.round(m.sharp_score) : '—'
+  return `★ ${total} ｜ 审美 ${a} ｜ 清晰 ${s}`
+}
 
 function rebuild() {
   const next = (props.state?.groups ?? []).filter((g) => g.needs_pk)
@@ -56,6 +84,8 @@ watch(() => props.state, () => {
   rebuild()
   if (queue.value[pos.value]?.id !== curId) takenIds.value = new Set()
 })
+// 换组后光标回到最左第一张 —— 也就是综合分最高的那张
+watch(() => group.value?.id, () => { sel.value = 0 })
 
 function followSel() {
   // 两种模式都要跟随：
@@ -74,8 +104,9 @@ function selDraw() {
 
 async function pick(i: number) {
   const g = group.value
-  if (!g) return
-  await api.pk(g.id, 'pick', g.members[i].idx)
+  const m = sorted.value[i]
+  if (!g || !m) return
+  await api.pk(g.id, 'pick', m.idx)
   takenIds.value = new Set()
   emit('done')
   pos.value++
@@ -131,8 +162,9 @@ async function allWinRest() {
 
 async function act(a: 'all' | 'none') {
   const g = group.value
-  if (!g) return
-  await api.pk(g.id, a, g.members[sel.value]?.idx)
+  const m = sorted.value[sel.value]
+  if (!g || !m) return
+  await api.pk(g.id, a, m.idx)
   emit('done')
   pos.value++
 }
@@ -209,14 +241,15 @@ async function onKey(e: KeyboardEvent) {
 
       <!-- 并排 PK -->
       <div v-if="mode === 'pk'" id="pkStage">
-        <div v-for="(m, i) in group.members" :key="m.idx" class="side" :class="{ selL: i === sel }">
+        <div v-for="(m, i) in sorted" :key="m.idx" class="side" :class="{ selL: i === sel }">
           <span v-if="i === aiIdx" class="aid" title="AI 默认选择">AI 首选</span>
           <img :src="m.thumb_view" title="点击 1:1 放大" @click="toggleZoom" />
           <div class="cap">
             <b>{{ m.name }}</b>
-            <span style="color: var(--dim)">
-              锐度 {{ Math.round(m.sharpness) }}{{ m.n_faces ? ' · ' + m.n_faces + '脸' : '' }}
-              {{ m.reject_reasons.length ? ' · ' + m.reject_reasons.join('/') : '' }}
+            <span class="sc">{{ scoreLine(m) }}</span>
+            <span class="tags">
+              <em v-for="t in tagsOf(m)" :key="t.text" :class="{ hard: t.hard }">{{ t.text }}</em>
+              <em class="plain">锐度 {{ Math.round(m.sharpness) }}</em>
             </span>
           </div>
         </div>
@@ -227,12 +260,16 @@ async function onKey(e: KeyboardEvent) {
         <div class="singlestage" v-if="cur">
           <img :src="cur.thumb_view" title="点击 1:1 放大" @click="toggleZoom" />
           <div class="singlecap">
-            <b>{{ cur.name }}</b>
-            <span>
-              锐度 {{ Math.round(cur.sharpness) }}<template v-if="cur.n_faces"> · {{ cur.n_faces }}脸</template>
-              <template v-if="cur.reject_reasons.length"> · {{ cur.reject_reasons.join('/') }}</template>
-            </span>
-            <span class="idx">{{ sel + 1 }} / {{ pool.length }}</span>
+            <div class="capline">
+              <b>{{ cur.name }}</b>
+              <span class="idx">{{ sel + 1 }} / {{ pool.length }}</span>
+            </div>
+            <div class="sc">{{ scoreLine(cur) }}</div>
+            <div class="tags">
+              <em v-for="t in tagsOf(cur)" :key="t.text" :class="{ hard: t.hard }">{{ t.text }}</em>
+              <em class="plain">锐度 {{ Math.round(cur.sharpness) }}</em>
+              <em class="plain">{{ cur.width }}×{{ cur.height }}</em>
+            </div>
           </div>
         </div>
         <div v-else class="empty">本组已全部处理</div>
@@ -240,6 +277,7 @@ async function onKey(e: KeyboardEvent) {
           <div v-for="(m, i) in pool" :key="m.idx" class="thumb" :class="{ on: i === sel }"
                @click="sel = i">
             <img :src="m.thumb_grid" />
+            <span class="tnum">{{ Math.round(m.score ?? 0) }}</span>
           </div>
         </div>
       </div>
@@ -282,22 +320,40 @@ async function onKey(e: KeyboardEvent) {
 }
 .singlecap {
   position: absolute; left: 0; right: 0; bottom: 0;
-  display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  display: flex; flex-direction: column; gap: 5px;
   padding: 10px 16px; border-radius: 0 0 10px 10px;
-  background: linear-gradient(transparent, rgba(0,0,0,.78));
+  background: linear-gradient(transparent, rgba(0,0,0,.82));
   font-size: 13px;
 }
 .singlecap b { font-size: 15px; }
 .singlecap span { color: #cfcfcf; }
 .singlecap .idx { margin-left: auto; color: #fff; }
+.capline { display: flex; align-items: baseline; gap: 12px; }
+
+/* 分数行：三项分数一眼可比 */
+.sc { color: #e8e8e8; font-size: 13px; letter-spacing: .2px; }
+/* 标签：离线模型给出的技术判断，红色=硬淘汰项 */
+.tags { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.tags em {
+  font-style: normal; font-size: 11px; padding: 1px 7px; border-radius: 5px;
+  background: rgba(255,255,255,.10); color: #d8d8d8;
+}
+.tags em.hard { background: rgba(255,90,90,.20); color: #ff9a9a; }
+.tags em.plain { background: transparent; color: #9a9a9a; padding-left: 0; }
 
 .thumbs { display: flex; gap: 8px; overflow-x: auto; max-width: 100%; padding-bottom: 4px; }
 .thumb {
+  position: relative;
   flex: 0 0 auto; width: 86px; height: 60px; border-radius: 6px; overflow: hidden;
   border: 2px solid transparent; opacity: .55; cursor: pointer;
 }
 .thumb.on { border-color: var(--acc); opacity: 1; }
 .thumb img { width: 100%; height: 100%; object-fit: cover; }
+/* 缩略图右下角的分数，扫一眼就知道谁高谁低 */
+.thumb .tnum {
+  position: absolute; right: 3px; bottom: 2px; font-size: 11px; color: #fff;
+  background: rgba(0,0,0,.6); padding: 0 4px; border-radius: 4px;
+}
 
 .keys { text-align: center; color: var(--dim); font-size: 12px; margin-top: 14px; }
 </style>

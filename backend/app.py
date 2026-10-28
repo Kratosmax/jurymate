@@ -276,6 +276,26 @@ def preflight_models():
             hint="请在「设置 → 模型」里点下载；国内网络可在网络设置里开启镜像站或填代理",
         )
 
+def peek_state_settings(folder: str) -> dict:
+    """只从磁盘 state.json 里读 settings，不加载照片。
+
+    为什么要它：进程刚启动时 STATE["settings"] 是空的，而用户上次已经选过
+    评分模式（存在 state.json 里）。不先读一眼，模式守卫就会把第一次
+    「开始整理」拦下来，误报「请先选择评分模式」。
+    """
+    f = Path(folder) / paths.STATE_DIRNAME / "state.json"
+    if not f.exists():
+        return {}
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+        if data.get("version") != STATE_VERSION:
+            return {}
+        s = data.get("settings")
+        return s if isinstance(s, dict) else {}
+    except Exception:
+        return {}
+
+
 @app.route("/api/start", methods=["POST"])
 def start():
     body = request.json or {}
@@ -287,6 +307,12 @@ def start():
     reset = bool(body.get("reset"))
     if not folder or not Path(folder).is_dir():
         return jsonify({"ok": False, "error": "目录不存在"}), 400
+    # 刚启动时 STATE["settings"] 是空的，但用户上次可能已经选过评分模式。
+    # 先看磁盘上的 state.json，避免把第一次「开始整理」误判成"没选模式"。
+    if not (STATE["settings"].get("score_mode") or ""):
+        peeked = peek_state_settings(folder)
+        if peeked.get("score_mode"):
+            STATE["settings"] = {**DEFAULT_SETTINGS, **peeked}
     # 没选评分模式就不该开跑：既算不出分，也没有对应的模型可加载。
     # 用 need_mode 让前端直接跳到设置页，而不是弹一句用户看不懂的报错。
     if not (STATE["settings"].get("score_mode") or ""):

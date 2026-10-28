@@ -229,6 +229,14 @@ button.danger:hover { filter: brightness(1.1); }
 .modelrow { display: flex; align-items: center; gap: 10px; }
 
 .slider-wrap { padding: 4px 2px 0; }
+/* 权重读数：常驻显示当前比例，拖动时实时变 */
+.wreadout {
+  font-size: 13px;
+  margin-bottom: 10px;
+  color: var(--dim);
+}
+.wreadout b { color: var(--acc); font-size: 15px; }
+.wreadout .sep { margin: 0 8px; opacity: .5; }
 /* 滑杆动画：填充色随位置在「清晰蓝 → 审美紫」之间过渡，
    拇指拖动时放大并发光，松手回弹。--hue 由组件按权重算出来。 */
 .wslider {

@@ -67,27 +67,39 @@ async function initBase() {
  * 等后端真正可服务。
  *
  * 后端是 PyInstaller onefile，冷启动要把约 1.1GB 运行时解压出来，
- * 实测可到 20 秒以上。此前页面在端口起来之前就发请求，全部失败，
- * 界面显示成空值（例如「当前目录 —」），用户以为功能坏了。
+ * 首次安装后实测可到 60~90 秒（Rust 侧 spawn_backend 自己等 90 秒）。
+ * 原来这里只等 60 秒、而且把"失败"缓存在模块变量里永不重试——
+ * 用户看到的就是「读取路径失败，可稍后刷新本页」，只能按 F5 才能恢复。
+ *
+ * 现在：等 180 秒；失败不缓存（下次调用重新试）；每秒钟回调一次已等秒数，
+ * 让界面能显示"正在启动，已等 32 秒"而不是一个死掉的报错。
  */
 let backendReady: Promise<boolean> | null = null
-async function waitBackend(timeoutMs = 60000): Promise<boolean> {
-  if (!backendReady) {
-    backendReady = (async () => {
-      await initBase()
-      if (!BASE) return false
-      const deadline = Date.now() + timeoutMs
-      while (Date.now() < deadline) {
-        try {
-          const r = await fetch(BASE + '/api/state', { method: 'GET' })
-          if (r.ok) return true
-        } catch { /* 还没起来，继续等 */ }
-        await new Promise(res => setTimeout(res, 800))
-      }
-      return false
-    })()
-  }
-  return backendReady
+export async function waitBackend(
+  onTick?: (seconds: number) => void,
+  timeoutMs = 180000,
+): Promise<boolean> {
+  if (backendReady) return backendReady
+  backendReady = (async () => {
+    await initBase()
+    if (!BASE) return false
+    const t0 = Date.now()
+    const deadline = t0 + timeoutMs
+    while (Date.now() < deadline) {
+      try {
+        const r = await fetch(BASE + '/api/state', { method: 'GET' })
+        if (r.ok) return true
+      } catch { /* 还没起来，继续等 */ }
+      onTick?.(Math.round((Date.now() - t0) / 1000))
+      await new Promise(res => setTimeout(res, 1000))
+    }
+    return false
+  })()
+  const ok = await backendReady
+  // 失败不能缓存成永久状态：否则后续任何一次调用都立刻返回 false，
+  // 页面再怎么刷新都没用，只有 F5 重新加载整个模块才能恢复。
+  if (!ok) backendReady = null
+  return ok
 }
 
 async function req<T = any>(path: string, body?: unknown, method?: string): Promise<T> {
@@ -123,8 +135,6 @@ function absT(p: Photo): Photo {
 function absGroups(groups: Group[]): Group[] {
   return groups.map((g) => ({ ...g, members: g.members.map((m) => ({ ...absT(m), idx: m.idx })) }))
 }
-
-export { waitBackend }
 
 export const api = {
   async state(): Promise<State> {
