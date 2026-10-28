@@ -44,7 +44,11 @@ def gpu_names() -> list[str]:
             out = subprocess.run(
                 ["powershell", "-NoProfile", "-Command",
                  "(Get-CimInstance Win32_VideoController).Name"],
-                capture_output=True, text=True, timeout=15)
+                capture_output=True, text=True, timeout=15,
+                # sidecar 是 GUI 子系统（--windowed），没有自己的控制台。
+                # 不加这个标志，每次探测显卡都会弹一个空白 PowerShell 窗口，
+                # 0.2 秒后消失——用户看到的就是"控制台一闪而过"。
+                creationflags=subprocess.CREATE_NO_WINDOW)
             raw = [l.strip() for l in out.stdout.splitlines() if l.strip()]
             names = [n for n in raw if "virtual" not in n.lower()]
         except Exception as e:

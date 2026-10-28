@@ -33,6 +33,7 @@ _L_EAR = [33, 160, 158, 133, 153, 144]
 _R_EAR = [362, 385, 387, 263, 373, 380]
 
 _FACES = None
+_FACES_CPU = None
 _MESH = None
 
 def _model_root() -> str:
@@ -66,26 +67,35 @@ def reset_cache() -> None:
     切换数据根后必须调用：_FACES 是全局单例，内部绑定了旧的模型目录。
     不清掉就会出现"目录已经切到新盘，但推理还在读旧盘的权重"。
     """
-    global _FACES
+    global _FACES, _FACES_CPU
     _FACES = None
+    _FACES_CPU = None
+
+
+def _build(providers: list[str]):
+    from insightface.app import FaceAnalysis
+    _assert_installed()   # 缺失就报错，不让库自己去下载
+    root = _model_root()
+    app = FaceAnalysis(
+        name="buffalo_l", root=root,
+        # 只用 detection + recognition：
+        # landmark_3d_68 我们从来不用（闭眼判定走 MediaPipe），
+        # 但它在 DirectML 上会稳定抛 AttributeError（5 点关键点返回 None），
+        # 一抛就把整张照片的人脸全丢掉 —— 用户看到的是"明明有人却标无脸"。
+        allowed_modules=["detection", "recognition"],
+        providers=providers)
+    app.prepare(ctx_id=0, det_size=(640, 640))
+    return app
 
 
 def _get():
     global _FACES
     if _FACES is not None:
         return _FACES
-    from insightface.app import FaceAnalysis
-    _assert_installed()   # 缺失就报错，不让库自己去下载
-    root = _model_root()
     prov = _providers()
-    log.info("faces: 初始化 buffalo_l @ %s, providers=%s", root, prov)
+    log.info("faces: 初始化 buffalo_l @ %s, providers=%s", _model_root(), prov)
     try:
-        # 注意：insightface 2.1 的 taskname 是动态格式 'landmark_3d_68'
-        # （landmark_%dd_%d），0.7 的 'landmark_3d68' 匹配不上会被静默过滤
-        app = FaceAnalysis(name="buffalo_l", root=root,
-                           allowed_modules=["detection", "landmark_3d_68", "recognition"],
-                           providers=prov)
-        app.prepare(ctx_id=0, det_size=(640, 640))
+        _FACES = _build(prov)
     except Exception as e:
         # 首次运行会在此自动下载 340MB；失败通常是网络/许可问题。
         # 不能吞掉——吞掉会让整批照片变成"无人脸"，失焦与闭眼判定全失效。
@@ -94,8 +104,17 @@ def _get():
             detail=str(e)[:200],
             hint="请在首页「模型就绪检查」点下载，或在网络设置里配置代理/镜像后重试",
         ) from e
-    _FACES = app
     return _FACES
+
+
+def _get_cpu():
+    """CPU 兜底实例：DirectML 偶发返回 None 时用它重试单张。"""
+    global _FACES_CPU
+    if _FACES_CPU is not None:
+        return _FACES_CPU
+    log.info("faces: 初始化 CPU 兜底实例")
+    _FACES_CPU = _build(["CPUExecutionProvider"])
+    return _FACES_CPU
 
 def _get_mesh():
     global _MESH
@@ -159,7 +178,8 @@ def _iou(a: list[float], b: list[float]) -> float:
     union = ((a[2]-a[0])*(a[3]-a[1]) + (b[2]-b[0])*(b[3]-b[1]) - inter)
     return inter / union if union > 1e-6 else 0.0
 
-def analyze(img_bgr: np.ndarray, settings: dict | None = None) -> list[dict]:
+def analyze(img_bgr: np.ndarray, settings: dict | None = None,
+            name: str = "") -> list[dict]:
     """返回每张脸的 {bbox, ear_l, ear_r, closed, half, tiny, source}。
 
     脸宽 < 40px（1600px 缩图上）跳过 EAR——远景路人脸眼睛只有几个像素，
@@ -174,15 +194,19 @@ def analyze(img_bgr: np.ndarray, settings: dict | None = None) -> list[dict]:
     #
     # insightface 的 landmark 阶段有个已知崩溃：检测框能出、但 5 点关键点
     # 估计失败时内部会把 None 传进 estimate_affine_matrix_3d23d，抛
-    # AttributeError: 'NoneType' object has no attribute 'shape'。
-    # 这出现在纯风景/严重虚化的照片上，属于单图可降级，不该让整批任务失败。
+    # AttributeError。已把 landmark 模块从 allowed_modules 里去掉（我们不用它），
+    # 但 DirectML 上偶发仍会出现，所以再加一层 CPU 兜底重试。
     try:
         det_faces = _get().get(img)
     except AttributeError as e:
         if "NoneType" not in str(e):
             raise
-        log.warning("faces: 关键点估计失败，本图按无人脸处理（%s）", e)
-        det_faces = []
+        log.warning("faces: %s 关键点估计失败，改用 CPU 重试（%s）", name or "?", e)
+        try:
+            det_faces = _get_cpu().get(img)
+        except Exception as e2:
+            log.warning("faces: %s CPU 重试仍失败，本图按无人脸处理（%s）", name or "?", e2)
+            det_faces = []
 
     out = []
     def push(bbox, ear_l=None, ear_r=None, source="insightface"):

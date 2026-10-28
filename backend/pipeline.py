@@ -266,7 +266,7 @@ def _face_stage(order: list, base_results: dict, settings: dict,
         if base is None:
             continue
         photo, gray, bgr = base
-        fl = faces_mod.analyze(bgr, settings)
+        fl = faces_mod.analyze(bgr, settings, photo.get("name", ""))
         photo["faces"] = [{k2: (v.tolist() if hasattr(v, "tolist") else v)
                            for k2, v in f.items() if k2 != "embedding"} for f in fl]
         photo["n_faces"] = len(fl)
