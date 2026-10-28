@@ -12,7 +12,10 @@ const sel = ref(0)
 // 两种审片模式：
 //   pk     —— 同组两张并排对比（原有机制）
 //   single —— 单张大图，左右切换，适合先快速过一遍再决定
-const mode = ref<'pk' | 'single'>('pk')
+// 模式持久化：用户偏好单图就一直是单图，不该每次打开都退回默认
+const MODE_KEY = 'jurymate.pkMode'
+const saved = (typeof localStorage !== 'undefined' && localStorage.getItem(MODE_KEY)) as 'pk' | 'single' | null
+const mode = ref<'pk' | 'single'>(saved === 'single' ? 'single' : 'pk')
 
 // 单图模式下已在本组内挑走的照片（继续审剩余时不再显示）
 const takenIds = ref<Set<number>>(new Set())
@@ -53,6 +56,12 @@ watch(() => props.state, () => {
   rebuild()
   if (queue.value[pos.value]?.id !== curId) takenIds.value = new Set()
 })
+
+function followSel() {
+  // PK 模式：选中项可能在横向溢出区外，必须滚进视野，否则"选了但看不见"
+  const el = document.querySelectorAll('#pkStage .side')[sel.value] as HTMLElement | undefined
+  el?.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' })
+}
 
 function selDraw() {
   const n = pool.value.length
@@ -138,6 +147,7 @@ function toggleZoom(e: MouseEvent) {
 }
 function switchMode(m: 'pk' | 'single') {
   mode.value = m
+  try { localStorage.setItem(MODE_KEY, m) } catch {}
   sel.value = 0
   takenIds.value = new Set()
 }
@@ -152,9 +162,9 @@ async function onKey(e: KeyboardEvent) {
   const g = group.value
   if (!g) return
   if (e.key === 'ArrowLeft') {
-    sel.value = Math.max(0, sel.value - 1); selDraw()
+    sel.value = Math.max(0, sel.value - 1); selDraw(); followSel()
   } else if (e.key === 'ArrowRight') {
-    sel.value = Math.min(pool.value.length - 1, sel.value + 1); selDraw()
+    sel.value = Math.min(pool.value.length - 1, sel.value + 1); selDraw(); followSel()
   } else if (e.key === 'ArrowUp') {
     if (mode.value === 'single') await allWinRest(); else await act('all')
   } else if (e.key === 'ArrowDown') {

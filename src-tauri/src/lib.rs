@@ -248,31 +248,39 @@ fn reveal_in_explorer(path: String) -> Result<String, String> {
         return Err(format!("文件不存在：{path}"));
     }
     let parent = target.parent().ok_or_else(|| "取不到父目录".to_string())?.to_path_buf();
-    let want = parent.to_string_lossy().replace('/', "\\").to_lowercase();
 
-    // 只用 SHOpenFolderAndSelectItems：它是"打开文件夹并选中该项"的专用接口。
-    // 之前对已打开的窗口调 IWebBrowser2::Navigate2(文件路径)，Explorer 会把它
-    // 当成"打开这个文档"——用户实测直接启动了看图程序，而不是定位。
-    // 这个 API 在目标文件夹已经打开时会复用同一个窗口，正是需要的语义。
-    let _ = (&want, CLSCTX_ALL);
+    // SHOpenFolderAndSelectItems(pidlFolder, cidl, apidl, flags) 的**第一个参数
+    // 必须是文件夹的 PIDL**，apidl 才是相对它解析的子项。之前把文件自己的 PIDL
+    // 当成 pidlFolder 传进去，Shell 就按"打开这个文件"处理——用户实测直接
+    // 启动了看图程序。这里分别解析父目录与文件，取文件的最后一级作为子项。
+    let folder_w: Vec<u16> = parent.to_string_lossy().encode_utf16().chain(std::iter::once(0)).collect();
+    let file_w: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+
     unsafe {
-        // SHParseDisplayName / SHOpenFolderAndSelectItems 都要求当前线程已初始化 COM
+        // SHParseDisplayName / SHOpenFolderAndSelectItems 要求当前线程已初始化 COM
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-    }
-
-    // 没有已打开的窗口：交给系统原生「打开文件夹并选中」
-    let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
-    unsafe {
         use windows::Win32::UI::Shell::{ILFindLastID, SHOpenFolderAndSelectItems, SHParseDisplayName};
         use windows::core::PCWSTR;
-        let mut pidl = std::ptr::null_mut();
+
+        let mut folder_pidl = std::ptr::null_mut();
+        let mut file_pidl = std::ptr::null_mut();
         let mut attrs = 0u32;
-        SHParseDisplayName(PCWSTR(wide.as_ptr()), None, &mut pidl, 0, Some(&mut attrs))
-            .map_err(|e| format!("解析路径失败: {e}"))?;
-        let child = ILFindLastID(pidl);
-        let r = SHOpenFolderAndSelectItems(pidl, Some(&[child]), 0);
-        windows::Win32::System::Com::CoTaskMemFree(Some(pidl as *const _));
-        r.map_err(|e| format!("打开失败: {e}"))?;
+        SHParseDisplayName(PCWSTR(folder_w.as_ptr()), None, &mut folder_pidl, 0, Some(&mut attrs))
+            .map_err(|e| format!("解析目录失败: {e}"))?;
+        if SHParseDisplayName(PCWSTR(file_w.as_ptr()), None, &mut file_pidl, 0, Some(&mut attrs)).is_err() {
+            windows::Win32::System::Com::CoTaskMemFree(Some(folder_pidl as *const _));
+            return Err("解析文件路径失败".into());
+        }
+        let child = ILFindLastID(file_pidl);
+        let r = SHOpenFolderAndSelectItems(folder_pidl, Some(&[child]), 0);
+        windows::Win32::System::Com::CoTaskMemFree(Some(folder_pidl as *const _));
+        windows::Win32::System::Com::CoTaskMemFree(Some(file_pidl as *const _));
+        if r.is_err() {
+            // 兜底：交给 explorer 的 /select 语法（仍是系统原生命令）
+            let _ = std::process::Command::new("explorer")
+                .arg(format!("/select,{}", path))
+                .spawn();
+        }
     }
     Ok("opened".into())
 }

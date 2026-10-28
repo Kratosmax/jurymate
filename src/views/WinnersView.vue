@@ -178,6 +178,8 @@ function moveActive(d: number) {
   activeIdx.value = Math.max(0, Math.min(n - 1, start + d))
   const el = document.querySelectorAll('#p-winners .card')[activeIdx.value] as HTMLElement | undefined
   el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  // 大图（lightbox）开着时，大图也要跟着切，而不是只动小图框选
+  if (lightbox.value) lightbox.value = winners.value[activeIdx.value]?.thumb_view ?? lightbox.value
 }
 function onKey(e: KeyboardEvent) {
   if (!(document.querySelector('#p-winners') as HTMLElement)?.offsetParent) return

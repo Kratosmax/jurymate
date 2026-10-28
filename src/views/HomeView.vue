@@ -82,8 +82,6 @@ onBeforeUnmount(() => clearInterval(timer))
 const sys = ref<any>(null)
 const models = computed<any[]>(() =>
   Array.isArray(sys.value?.models) ? sys.value.models : [])
-const hasMissingModel = computed(() =>
-  models.value.some((m: any) => m.installed === false))
 const dlRunning = ref(false)
 const dlId = ref('')
 const dlDone = ref(0)
@@ -146,8 +144,6 @@ const etaText = () => {
           {{ confirmReset ? '确认重新整理' : '重新整理' }}
         </button>
         <button v-if="confirmReset" class="ghost" @click="confirmReset = false">取消</button>
-        <button class="ghost" title="查看模型是否就绪，可单独下载"
-                @click="showModels = !showModels; checkSys()">模型</button>
       </div>
       <div v-if="confirmReset" class="hintbar" style="text-align:left;border-color:var(--warn)">
         将删除该目录的扫描结果、缩略图缓存与全部<b>人工标记</b>，然后从零重新扫描。
@@ -175,15 +171,14 @@ const etaText = () => {
         <div v-if="errHint" style="margin-top:6px;color:var(--dim);font-size:12px">{{ errHint }}</div>
         <!-- 只有真的是模型缺失才提下载；其它错误（比如代码异常）说这句话是误导 -->
         <div v-if="errKind === 'model'" style="margin-top:8px;font-size:12px">
-          <button class="ghost" style="padding:3px 12px;font-size:12px"
-                  @click="showModels = true; checkSys()">打开模型检查</button>
-          <span class="dim" style="margin-left:8px">国内网络建议先在设置里开镜像站或填代理。</span>
+          <span class="dim">到「设置 → 模型」里点对应模型的「下载」。
+          国内网络建议先在设置里开镜像站或填代理。</span>
         </div>
         <div v-else style="margin-top:8px;font-size:12px;color:var(--dim)">
           这是程序内部错误，不是模型问题。日志在数据目录 logs/backend.log，可反馈给开发者。
         </div>
       </div>
-      <div v-if="(sys && (showModels || hasMissingModel)) || showModels" class="hintbar" style="text-align:left">
+      <div v-if="false" class="hintbar" style="text-align:left">
         <b v-if="sys">模型就绪检查</b><template v-if="sys?.backend_hint">（{{ sys.backend_hint }}<template v-if="sys.gpu">｜{{ sys.gpu }}</template>）</template>
         <div v-if="!sys" style="margin-top:6px;color:var(--dim);font-size:12px">
           后端状态读取中…（不影响下面的存储位置设置）

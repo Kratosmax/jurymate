@@ -160,13 +160,42 @@ async function saveNet() {
   }
 }
 
+// ---- 模型就绪检查 ----
+// 从首页移过来：模型属于「程序配置」，放在设置里更合理，
+// 而且必须能看到每个模型的下载按钮。
+const sys = ref<any>(null)
+const models = computed<any[]>(() => Array.isArray(sys.value?.models) ? sys.value.models : [])
+const dlRunning = ref(false)
+const dlId = ref('')
+const dlDone = ref(0)
+const dlTotal = ref(1)
+const dlPct = computed(() => dlTotal.value ? Math.round(dlDone.value / dlTotal.value * 100) : 0)
+
+async function checkSys() {
+  try { sys.value = await api.systemDetect() } catch {}
+}
+async function dlModel(id: string) {
+  dlRunning.value = true; dlId.value = id; dlDone.value = 0; dlTotal.value = 1
+  await api.modelsDownload(id)
+  const timer = setInterval(async () => {
+    const p = await api.modelsProgress()
+    dlDone.value = p.done; dlTotal.value = p.total || 1
+    if (!p.running) {
+      clearInterval(timer); dlRunning.value = false
+      emit('toast', p.error ? `下载失败：${p.error}` : '下载完成')
+      checkSys()
+    }
+  }, 500)
+}
+
 onMounted(async () => {
+
   // 先等后端把 1.1GB 运行时解压完再取数据，否则整页都是空值
   pathErr.value = '正在等待后端启动（首次启动约需 20 秒）…'
   const ok = await waitBackend().catch(() => false)
   if (!ok) { pathErr.value = '后端未在预期时间内就绪，可稍后刷新本页'; return }
   pathErr.value = ''
-  await Promise.all([loadPaths(), loadNet(), loadPerf()])
+  await Promise.all([loadPaths(), loadNet(), loadPerf()]); checkSys()
 })
 </script>
 
@@ -350,6 +379,28 @@ onMounted(async () => {
       <div style="margin-top:12px;display:flex;align-items:center;gap:10px">
         <button class="act" style="padding:5px 14px;font-size:12px" @click="saveNet">保存网络设置</button>
         <span v-if="netSavedMsg" class="dim" style="font-size:12px;color:var(--good)">{{ netSavedMsg }}</span>
+      </div>
+    </section>
+
+    <!-- 模型 -->
+    <section class="card">
+      <h2>模型</h2>
+      <div class="dim" style="font-size:12px;margin-bottom:8px"
+           title="insightface 人脸模型为非商业许可，不随程序分发，按需下载">
+        ⓘ 缺哪个就点哪个的「下载」。
+      </div>
+      <div v-if="!sys" class="dim" style="font-size:12px">正在读取模型状态…</div>
+      <div v-for="m in models" :key="m.id" style="display:flex;align-items:center;gap:10px;margin-top:6px">
+        <span style="flex:1;font-size:13px">{{ m.name }} · {{ m.size_mb }}MB</span>
+        <span v-if="m.installed === true" style="color:var(--good);font-size:12px">✓ 已就绪</span>
+        <button v-else class="ghost" :disabled="dlRunning" style="padding:3px 14px;font-size:12px"
+                @click="dlModel(m.id)">
+          {{ dlRunning && dlId === m.id ? `下载中 ${dlPct}%` : '下载' }}
+        </button>
+      </div>
+      <div v-if="dlRunning" class="prog" style="margin:8px 0 0"><div :style="{width: dlPct+'%'}" /></div>
+      <div v-if="sys?.backend_hint" class="dim" style="font-size:11px;margin-top:8px">
+        {{ sys.backend_hint }}<template v-if="sys.gpu">｜{{ sys.gpu }}</template>
       </div>
     </section>
 

@@ -1057,6 +1057,26 @@ def thumbs(p):
     folder = Path(STATE["folder"]) if STATE["folder"] else Path(".")
     return send_from_directory(folder / paths.STATE_DIRNAME / "thumbs", p)
 
+
+def _preload_aesthetic() -> None:
+    """后台预加载审美模型。
+
+    MUSIQ 首次创建要读 104MB 权重 + 初始化 torch，实测 20 秒以上。原来是在
+    扫描推进到评分阶段才惰性加载，用户看到的就是进度条卡在"加载审美模型"
+    很久不动。后端一启动就预热，扫描跑到评分时模型已在内存里。
+    """
+    try:
+        # app.py 顶部并没有 import aesthetic（只通过 pipeline 间接用到），
+        # 这里必须自己导入，否则报 name 'aesthetic' is not defined。
+        import aesthetic as _aesthetic
+        _aesthetic._get()
+        log.info("审美模型预加载完成")
+    except Exception as e:
+        log.info("审美模型预加载跳过（稍后按需加载）：%s", e)
+
+
+threading.Thread(target=_preload_aesthetic, daemon=True).start()
+
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser()
