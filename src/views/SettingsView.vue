@@ -5,6 +5,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { api, waitBackend } from '../api'
+import { loadNetCfg, normalizeMirrors, saveNetCfg } from '../netstore'
 
 const emit = defineEmits<{ toast: [m: string]; netsaved: []; refresh: [] }>()
 const props = defineProps<{ updater: any }>()
@@ -143,24 +144,44 @@ async function savePerf() {
   }
 }
 async function loadNet() {
+  // 先读本地：后端还在解压时也能看到、也能改
+  const local = loadNetCfg()
+  netMirrors.value = [...local.github_mirrors]
+  netProxy.value = local.http_proxy
+  useMirror.value = local.use_mirror
+  netOrder.value = local.order
+  // 本地没存过（首次使用）才从后端取一次作为初始值
+  if (localStorage.getItem('jurymate.net')) return
   try {
     const n = await api.netSettingsGet()
     netMirrors.value = [...(n.github_mirrors ?? [])]
     netProxy.value = n.http_proxy ?? ''
     useMirror.value = !!n.use_mirror
     netOrder.value = (n.order === 'direct_first') ? 'direct_first' : 'mirror_first'
-  } catch {}
+    saveNetCfg({
+      use_mirror: useMirror.value,
+      github_mirrors: normalizeMirrors(netMirrors.value),
+      http_proxy: netProxy.value.trim(),
+      order: netOrder.value,
+    })
+  } catch { /* 后端没起来就用默认值 */ }
 }
 async function saveNet() {
-  const r = await api.netSettingsSave(
-    useMirror.value, netMirrors.value.filter(s => s.trim()),
-    netProxy.value.trim(), netOrder.value)
-  if (r.ok) {
-    emit('netsaved')          // 让更新器丢掉代理缓存，下次检查用新值
-    await loadNet()
-    netSavedMsg.value = '已保存，检查更新与模型下载都会用这套设置'
-    setTimeout(() => (netSavedMsg.value = ''), 4000)
+  const cfg = {
+    use_mirror: useMirror.value,
+    github_mirrors: normalizeMirrors(netMirrors.value),
+    http_proxy: netProxy.value.trim(),
+    order: netOrder.value,
   }
+  // 本地先落盘并立刻生效（更新检查马上能用），后端只是同步一份给模型下载器
+  saveNetCfg(cfg)
+  emit('netsaved')
+  netSavedMsg.value = '已保存到本机，立即生效'
+  setTimeout(() => (netSavedMsg.value = ''), 4000)
+  try {
+    await api.netSettingsSave(cfg.use_mirror, cfg.github_mirrors, cfg.http_proxy, cfg.order)
+    await loadPaths()
+  } catch { /* 后端未就绪：本地已生效，下次启动会再同步 */ }
 }
 
 // ---- 模型就绪检查 ----
@@ -351,22 +372,28 @@ async function removeModel(id: string) {
 }
 
 const bootFailed = ref(false)
+const bootSecs = ref(0)
+const backendUp = ref(false)
 async function boot() {
-  // 先等后端把 1.1GB 运行时解压完再取数据，否则整页都是空值。
-  // 首次安装后实测要 60~90 秒，这里把已等秒数显示出来，别让用户对着
-  // 一句「读取失败」发呆。
+  // 网络设置先读本地，不等后端——否则 sidecar 解压的那一分钟里
+  // 用户在设置页改镜像根本存不进去。
+  loadNet()
   bootFailed.value = false
-  pathErr.value = '正在等待后端启动（首次启动约需 20 秒）…'
-  const ok = await waitBackend((s) => {
-    pathErr.value = `正在等待后端启动…已等 ${s} 秒（首次安装要解压约 1.1GB 运行时）`
-  }).catch(() => false)
+  bootSecs.value = 0
+  pathErr.value = ''
+  const ok = await waitBackend((s) => { bootSecs.value = s }).catch(() => false)
   if (!ok) {
     bootFailed.value = true
     pathErr.value = '后端未在预期时间内就绪'
     return
   }
-  pathErr.value = ''
-  await Promise.all([loadPaths(), loadNet(), loadPerf()]); checkSys()
+  backendUp.value = true
+  await Promise.all([loadPaths(), loadPerf()]); checkSys()
+  // 本地网络配置同步给后端（后端刚起来时它自己那份可能还是默认值）
+  try {
+    const c = loadNetCfg()
+    await api.netSettingsSave(c.use_mirror, c.github_mirrors, c.http_proxy, c.order)
+  } catch { /* 失败不影响本地生效 */ }
 }
 
 onMounted(boot)
@@ -438,7 +465,11 @@ onMounted(boot)
     <section class="card">
       <h2>存储位置</h2>
 
-      <div v-if="pathErr" class="hintbar" :style="{ borderColor: bootFailed ? 'var(--bad)' : 'var(--line)', marginBottom: '10px' }">
+      <div v-if="!backendUp && !bootFailed" class="hintbar" style="margin-bottom:10px">
+        <span class="spin" /> 正在等待后端启动<span style="display:inline-block;width:52px;text-align:right;opacity:.7">{{ bootSecs }}s</span>
+        <span class="dim" style="font-size:12px">（首次安装要解压约 1.1GB 运行时；网络设置现在就可以改，已保存到本机）</span>
+      </div>
+      <div v-if="pathErr" class="hintbar" :style="{ borderColor: 'var(--bad)', marginBottom: '10px' }">
         {{ pathErr }}
         <div v-if="bootFailed" style="margin-top:8px">
           <button class="ghost" style="padding:3px 12px;font-size:12px" @click="boot">重试</button>

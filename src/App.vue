@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { api } from './api'
 import { cardsIn, pageEnter } from './motion'
+import { loadNetCfg, updateCandidates } from './netstore'
 import { check, type Update } from '@tauri-apps/plugin-updater'
 import { relaunch } from '@tauri-apps/plugin-process'
 import { invoke } from '@tauri-apps/api/core'
@@ -45,25 +46,48 @@ const updaterApi = reactive({
 // 更新器默认只认系统代理，不认应用内「网络设置」的代理——用户明明配了代理、
 // 模型能下，检查更新却失败。这里把同一份设置显式传给更新器。
 // 未配置时传 undefined，行为退回系统代理/直连，不改变原有默认。
+// 直接从本地配置读：后端没起来时更新检查也要能用用户刚填的代理。
 let cachedProxy: string | null | undefined
 async function updaterProxy(): Promise<string | undefined> {
   if (cachedProxy !== undefined) return cachedProxy ?? undefined
-  try {
-    const net = await api.netSettingsGet()
-    // 后端出错时会返回 { ok:false, error }，此时不能把结果缓存成"无代理"——
-    // 否则一次早于 initBase 的失败会让代理永久失效。
-    if (!net || (net as any).ok === false || (net as any).error) {
-      return undefined
-    }
-    cachedProxy = net.http_proxy?.trim() || null
-  } catch {
-    return undefined   // 同样不缓存，下次重试
-  }
+  const local = loadNetCfg()
+  cachedProxy = local.http_proxy.trim() || null
   return cachedProxy ?? undefined
 }
 /** 网络设置变更后清掉缓存，让下次检查更新用新代理。 */
 function invalidateProxy() { cachedProxy = undefined }
 
+
+// 直连更新器失败时，用「镜像前缀 → 直连」的候选线路自己取一次清单。
+// 注意：这条路径只用于**发现新版本**并给出镜像下载地址；Tauri 的原地升级
+// 仍然走它自己的直连通道（插件不支持运行时改 endpoint）。镜像线路对
+// GitHub 被墙的用户是唯一能用的线路，所以至少要让"有没有新版本"能查到。
+function cmpVer(a: string, b: string): number {
+  const pa = a.split('.').map(Number)
+  const pb = b.split('.').map(Number)
+  for (let i = 0; i < 3; i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0)
+    if (d) return d
+  }
+  return 0
+}
+async function checkViaMirror(): Promise<{ version: string; notes: string; url: string } | null> {
+  for (const url of updateCandidates(loadNetCfg())) {
+    try {
+      const r = await fetch(url, { cache: 'no-store' })
+      if (!r.ok) continue
+      const j = await r.json()
+      if (j?.version && cmpVer(String(j.version), APP_VERSION) > 0) {
+        return {
+          version: String(j.version),
+          notes: j.notes ?? '',
+          url: j?.platforms?.['windows-x86_64']?.url ?? '',
+        }
+      }
+    } catch { /* 这条线路不通，试下一条 */ }
+  }
+  return null
+}
 
 // 检查更新的结果放进常驻状态（定义见文件上方 updCheck）
 async function checkUpdate(silent: boolean) {
@@ -79,6 +103,17 @@ async function checkUpdate(silent: boolean) {
       updCheck.value = { kind: 'none', text: `已是最新版本（v${APP_VERSION}）` }
     }
   } catch (e) {
+    // 直连失败：换镜像线路再查一次
+    const m = await checkViaMirror()
+    if (m) {
+      updateInfo.value = { version: m.version, body: m.notes }
+      updCheck.value = {
+        kind: 'ok',
+        text: `发现新版本 v${m.version}（镜像线路）`,
+        detail: m.url ? `镜像下载地址：${m.url}` : '',
+      }
+      return
+    }
     const via = await updaterProxy()
     updCheck.value = {
       kind: 'err',
