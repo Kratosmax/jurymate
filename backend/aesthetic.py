@@ -92,10 +92,13 @@ def score(img_pil) -> float:
     r = score_batch([img_pil])
     return r[0]
 
-def score_batch(imgs) -> list:
-    """批量评分：同尺寸的张合并成一个 forward（千张场景把 torch 开销摊薄）。
+def score_batch(imgs, progress=None) -> list:
+    """批量评分：同尺寸的张合并成一个 forward。
 
     分组按 (宽, 高)——MUSIQ 对纵横比敏感，同尺寸才保证分数与单张一致。
+    progress(done, total) 每 8 张回调一次，用于真实进度显示：
+    原来把整个尺寸组（可能上百张）一次 forward，中间一分钟没有任何反馈，
+    用户看到的就是"一直卡在审美评分"。
     返回与输入等长的 5 分制列表，失败位为 None。"""
     from PIL import Image as _Img
     groups: dict[tuple, list[int]] = {}
@@ -111,20 +114,36 @@ def score_batch(imgs) -> list:
             log.warning("aesthetic: 预处理失败 #%d (%s)", i, e)
     try:
         import torch
+        import os as _os
         from torchvision.transforms.functional import to_tensor
-        torch.set_num_threads(4)
+        # 原来写死 4 线程，16 核机器上一半核心闲置。实测（24 张）：
+        # 4 线程 618ms/张，8 线程 458ms，12 线程 423ms，16 线程 433ms。
+        # 12 是最优点，再多反而因调度开销变慢。
+        torch.set_num_threads(max(4, min(_os.cpu_count() or 4, 12)))
         m = _get()   # 模型不可用会抛 ModelUnavailable，不吞
         by_idx = dict(prepped)
+        total_imgs = len(prepped)
+        done = 0
+        # 8 张一批：实测比整组一次 forward 更快（416 vs 464 ms/张），
+        # 同时给出足够细的进度粒度（每批约 3 秒）。
+        CHUNK = 8
         for size, idxs in groups.items():
-            try:
-                t = torch.stack([to_tensor(by_idx[i]) for i in idxs])
-                with torch.no_grad():
-                    v = m(t)
-                for i, raw in zip(idxs, v.flatten().tolist()):
-                    out[i] = round(_stretch(float(raw)), 1)
-            except Exception as e:
-                # 单批推理失败：这一批记 None，其他批次继续（已写进日志）
-                log.warning("aesthetic: 批推理失败 size=%s (%s)", size, e)
+            for k in range(0, len(idxs), CHUNK):
+                part = idxs[k:k + CHUNK]
+                try:
+                    t = torch.stack([to_tensor(by_idx[i]) for i in part])
+                    with torch.no_grad():
+                        v = m(t)
+                    for i, raw in zip(part, v.flatten().tolist()):
+                        out[i] = round(_stretch(float(raw)), 1)
+                except Exception as e:
+                    log.warning("aesthetic: 批推理失败 size=%s (%s)", size, e)
+                done += len(part)
+                if progress:
+                    try:
+                        progress(done, total_imgs)
+                    except Exception:
+                        pass
     except ImportError as e:
         raise errors.ModelUnavailable(
             "审美评分 MUSIQ（依赖缺失）",

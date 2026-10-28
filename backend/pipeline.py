@@ -276,7 +276,12 @@ def score_candidates(photos: list[dict], state_dir: Path, settings: dict,
         view = Path(ph["thumb_view"].lstrip("/"))
         cached = state_dir / view
         images.append(load_preview(str(cached) if cached.exists() else ph["path"]))
-    for ph, s in zip(todo, aesthetic.score_batch(images)):
+    def _ae_prog(done: int, tot: int) -> None:
+        # 真实进度：每评完 8 张报一次，阶段期间进度条要动
+        if progress and report_all is not None and tot:
+            progress(n + int(done / tot * len(todo)), n * 2, f"审美评分 {done}/{tot}")
+
+    for ph, s in zip(todo, aesthetic.score_batch(images, progress=_ae_prog)):
         ph["aesthetic"] = s
     if progress and report_all is not None:
         for idx, ph in enumerate(photos):
