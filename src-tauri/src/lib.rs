@@ -241,12 +241,7 @@ fn backend_file_free() -> bool {
 #[cfg(windows)]
 #[tauri::command]
 fn reveal_in_explorer(path: String) -> Result<String, String> {
-    use windows::core::Interface;
-    use windows::Win32::System::Variant::VARIANT;
-    use windows::Win32::System::Com::{
-        CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_APARTMENTTHREADED,
-    };
-    use windows::Win32::UI::Shell::{IShellWindows, IWebBrowser2, ShellWindows};
+    use windows::Win32::System::Com::{CoInitializeEx, CLSCTX_ALL, COINIT_APARTMENTTHREADED};
 
     let target = std::path::PathBuf::from(&path);
     if !target.exists() {
@@ -255,28 +250,14 @@ fn reveal_in_explorer(path: String) -> Result<String, String> {
     let parent = target.parent().ok_or_else(|| "取不到父目录".to_string())?.to_path_buf();
     let want = parent.to_string_lossy().replace('/', "\\").to_lowercase();
 
+    // 只用 SHOpenFolderAndSelectItems：它是"打开文件夹并选中该项"的专用接口。
+    // 之前对已打开的窗口调 IWebBrowser2::Navigate2(文件路径)，Explorer 会把它
+    // 当成"打开这个文档"——用户实测直接启动了看图程序，而不是定位。
+    // 这个 API 在目标文件夹已经打开时会复用同一个窗口，正是需要的语义。
+    let _ = (&want, CLSCTX_ALL);
     unsafe {
-        // 可能已在本线程初始化过，返回 RPC_E_CHANGED_MODE 可忽略
+        // SHParseDisplayName / SHOpenFolderAndSelectItems 都要求当前线程已初始化 COM
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-
-        if let Ok(sw) = CoCreateInstance::<_, IShellWindows>(&ShellWindows, None, CLSCTX_ALL) {
-            if let Ok(count) = sw.Count() {
-                for i in 0..count {
-                    let idx = VARIANT::from(i);
-                    let Ok(disp) = sw.Item(&idx) else { continue };
-                    let Ok(wb) = disp.cast::<IWebBrowser2>() else { continue };
-                    let Ok(url) = wb.LocationURL() else { continue };
-                    let u = url.to_string();
-                    let decoded = percent_decode(u.trim_start_matches("file:///").replace('/', "\\").as_str());
-                    if decoded.to_lowercase() == want {
-                        let arg = VARIANT::from(path.as_str());
-                        if wb.Navigate2(&arg, None, None, None, None).is_ok() {
-                            return Ok("reused".into());
-                        }
-                    }
-                }
-            }
-        }
     }
 
     // 没有已打开的窗口：交给系统原生「打开文件夹并选中」

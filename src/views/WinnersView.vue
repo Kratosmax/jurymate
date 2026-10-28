@@ -169,11 +169,30 @@ async function revealFile() {
   }
 }
 
+// ---- 左右键切换当前照片 ----
+const activeIdx = ref(-1)
+function moveActive(d: number) {
+  const n = winners.value.length
+  if (!n) return
+  const start = activeIdx.value < 0 ? 0 : activeIdx.value
+  activeIdx.value = Math.max(0, Math.min(n - 1, start + d))
+  const el = document.querySelectorAll('#p-winners .card')[activeIdx.value] as HTMLElement | undefined
+  el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+}
+function onKey(e: KeyboardEvent) {
+  if (!(document.querySelector('#p-winners') as HTMLElement)?.offsetParent) return
+  if (e.key === 'ArrowLeft') { e.preventDefault(); moveActive(-1) }
+  else if (e.key === 'ArrowRight') { e.preventDefault(); moveActive(1) }
+}
+
 onMounted(() => {
+
+  window.addEventListener('keydown', onKey)
   window.addEventListener('click', closeCtx)
   window.addEventListener('scroll', closeCtx, true)
 })
 onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKey)
   window.removeEventListener('click', closeCtx)
   window.removeEventListener('scroll', closeCtx, true)
 })
@@ -221,8 +240,9 @@ onBeforeUnmount(() => {
     </div>
     <div class="grid">
       <PhotoCard v-for="(p, i) in winners" :key="p.path" :photo="p"
+                 :class="{ cardsel: i === activeIdx }"
                  :style="{ animationDelay: Math.min(i * 0.03, 0.5) + 's' }"
-                 :badge="p.manual_winner ? '人工召回' : ''"
+                 :badge="p.manual_winner ? '手动' : ''"
                  :note="'MUSIQ 无参考审美模型的 5 分制映射（人类平均审美参考分，AI 拿它排序）'"
                  @click="lightbox = p.thumb_view" @contextmenu="onContextMenu($event, p)">
         <template #footer>

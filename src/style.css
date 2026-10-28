@@ -182,3 +182,6 @@ button.danger:hover { filter: brightness(1.1); }
 #lightbox { position: fixed; inset: 0; background: rgba(0,0,0,.92); display: none; z-index: 70; align-items: center; justify-content: center; cursor: zoom-out; }
 #lightbox.on { display: flex; animation: fadeIn .15s; }
 #lightbox img { max-width: 97vw; max-height: 97vh; object-fit: contain; }
+
+.card.cardsel { border-color: var(--acc) !important; box-shadow: 0 0 0 3px rgba(91,157,255,.35); }
+

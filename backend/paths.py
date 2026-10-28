@@ -101,6 +101,38 @@ def thumbs_dir(session_state: Path) -> Path:
     return d
 
 
+def _cleanup_stale_mei() -> None:
+    """删掉上次运行残留的 _MEI* 解压目录。
+
+    PyInstaller onefile 每次启动都会把约 1.1GB 运行时解压到 TEMP/_MEIxxxx，
+    正常退出自己会删；进程被强杀（应用更新、任务管理器结束、崩溃）时就留下了。
+    实测累积 21 个共 23.9GB，用户看到"临时解压"越用越大。
+
+    只删"不是本进程、且 5 分钟没动过"的目录：更新时新旧两个进程会短暂并存，
+    按名字全删会误删正在运行的实例。
+    """
+    import shutil
+    import time
+    try:
+        base = Path(os.environ.get("TEMP") or tempfile.gettempdir())
+        cur = getattr(sys, "_MEIPASS", None)
+        curp = Path(cur).resolve() if cur else None
+        now = time.time()
+        for d in base.glob("_MEI*"):
+            try:
+                if not d.is_dir():
+                    continue
+                if curp is not None and d.resolve() == curp:
+                    continue
+                if now - d.stat().st_mtime < 300:
+                    continue
+                shutil.rmtree(d, ignore_errors=True)
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+
 def _redirect_temp() -> None:
     """把 TEMP/TMP 指到数据目录下的 tmp，让 _MEI* 落在用户指定的位置。
 
@@ -115,6 +147,7 @@ def _redirect_temp() -> None:
         os.environ["TMP"] = t
         import tempfile
         tempfile.tempdir = t
+        _cleanup_stale_mei()
     except Exception:
         pass   # 目录不可写等情况下退回系统默认，不能让后端起不来
 

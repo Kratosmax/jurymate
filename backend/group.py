@@ -54,14 +54,56 @@ def group(infos: list[dict], settings: dict | None = None) -> list[list[int]]:
             hashes.append((i, h if isinstance(h, imagehash.ImageHash) else _ih.hex_to_hash(h)))
         except (ValueError, AttributeError):
             pass
-    for j in range(len(hashes)):
-        ia, ha = hashes[j]
-        for k in range(j + 1, len(hashes)):
-            ib, hb = hashes[k]
-            if find(ia) == find(ib):
-                continue
-            if ha - hb <= pd:
-                merge(ia, ib)
+    # 精确的近邻检索，避免 O(n²)。原来两两比对：3000 张要做 450 万次
+    # 汉明距离计算，实测"正在收尾"能卡几分钟。
+    # 做法：64 位哈希切成 4×16 位。若整体距离 ≤ pd，由鸽巢原理，
+    # 必有一个 16 位块的距离 ≤ floor(pd/4)。于是按"块 + 块值"建桶，
+    # 查询时只枚举该块距离 ≤ floor(pd/4) 的变体（≤137 个），
+    # 再对候选做完整 64 位校验——结果与全量两两比对完全一致。
+    if hashes and pd >= 0:
+        block = 16
+        max_block_dist = pd // 4
+        # 预计算 16 位空间中距离 ≤ max_block_dist 的所有变体
+        def variants(v: int, limit: int):
+            out = [v]
+            if limit <= 0:
+                return out
+            for bit in range(block):
+                nv = v ^ (1 << bit)
+                out.append(nv)
+            if limit >= 2:
+                for b1 in range(block):
+                    for b2 in range(b1 + 1, block):
+                        out.append(v ^ (1 << b1) ^ (1 << b2))
+            return out
+
+        buckets: dict[tuple[int, int], list[int]] = {}
+        masks = [(0xFFFF << (16 * k)) for k in range(4)]
+        for pos, (idx, h) in enumerate(hashes):
+            hv = int(str(h), 16) if not isinstance(h, int) else h
+            for k in range(4):
+                part = (hv & masks[k]) >> (16 * k)
+                for var in variants(part, max_block_dist):
+                    buckets.setdefault((k, var), []).append(pos)
+
+        seen_pairs: set[tuple[int, int]] = set()
+        for pos, (ia, ha) in enumerate(hashes):
+            hv = int(str(ha), 16) if not isinstance(ha, int) else ha
+            cand: set[int] = set()
+            for k in range(4):
+                part = (hv & masks[k]) >> (16 * k)
+                for var in variants(part, max_block_dist):
+                    cand.update(buckets.get((k, var), ()))
+            for other in cand:
+                if other == pos:
+                    continue
+                lo, hi = (pos, other) if pos < other else (other, pos)
+                if (lo, hi) in seen_pairs:
+                    continue
+                seen_pairs.add((lo, hi))
+                ib, hb = hashes[hi][0], hashes[hi][1]
+                if find(ia) != find(ib) and (ha - hb) <= pd:
+                    merge(ia, ib)
 
     groups: dict[int, list[int]] = {}
     for i in range(n):

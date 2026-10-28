@@ -18,7 +18,19 @@ const byReason = computed(() => {
   }
   return m
 })
-const hi = ref(-1)
+// 用 path 而不是下标记录"当前选中"：卡片是按原因分组渲染的，
+// DOM 顺序和 rejects 的排序并不一致，用下标记会错位。
+const activePath = ref('')
+
+function moveActive(d: number) {
+  const list = rejects.value
+  if (!list.length) return
+  const cur = list.findIndex((p) => p.path === activePath.value)
+  const next = Math.max(0, Math.min(list.length - 1, (cur < 0 ? (d > 0 ? -1 : 0) : cur) + d))
+  activePath.value = list[next].path
+  const el = document.querySelector(`#revWrap .card[data-path="${CSS.escape(list[next].path)}"]`) as HTMLElement | undefined
+  el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+}
 
 async function recall(path: string) {
   const r = await api.recall(path)
@@ -29,21 +41,13 @@ async function recall(path: string) {
 }
 function onKey(e: KeyboardEvent) {
   if (!(document.querySelector('#p-review') as HTMLElement)?.offsetParent) return
-  const cards = document.querySelectorAll('#revWrap .card')
   if (e.key === 'r' || e.key === 'R') {
-    const c = cards[hi.value >= 0 ? hi.value : 0] as HTMLElement | undefined
-    if (c?.dataset.path) recall(c.dataset.path)
-  }
-  if (e.key === 'ArrowDown' && hi.value < cards.length - 1) {
-    hi.value++
-    cards[hi.value].scrollIntoView({ block: 'nearest' })
+    const t = activePath.value || rejects.value[0]?.path
+    if (t) recall(t)
     e.preventDefault()
   }
-  if (e.key === 'ArrowUp' && hi.value > 0) {
-    hi.value--
-    cards[hi.value].scrollIntoView({ block: 'nearest' })
-    e.preventDefault()
-  }
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); moveActive(1) }
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); moveActive(-1) }
 }
 window.addEventListener('keydown', onKey)
 </script>

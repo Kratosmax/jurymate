@@ -61,6 +61,7 @@ async function poll() {
     if (p.error) {
       // 模型类失败要显眼且可操作：直接展开模型面板，让用户能立刻点下载
       errMsg.value = p.error
+      errKind.value = p.error_kind ?? ''
       errHint.value = p.error_hint ?? ''
       if (p.error_kind === 'model') {
         showModels.value = true
@@ -88,6 +89,7 @@ const dlId = ref('')
 const dlDone = ref(0)
 const dlTotal = ref(1)
 const errMsg = ref('')
+  const errKind = ref('')
 const errHint = ref('')
 const showModels = ref(false)
 const APP_VERSION = __APP_VERSION__
@@ -135,21 +137,21 @@ const etaText = () => {
         <input v-model="folder" type="text" style="width: 440px"
                placeholder="照片文件夹绝对路径，如 C:\Users\you\Pictures\xx" list="dirs" />
         <datalist id="dirs"><option v-for="d in recent" :key="d" :value="d" /></datalist>
-        <button class="act" :disabled="scanning" @click="start('full')">开始整理</button>
-        <button v-if="state?.photos?.length" class="ghost" :disabled="scanning"
-                title="目录里有新图时只补新图，已有人工决策保留" @click="start('incremental')">增量补扫</button>
+        <button class="act" :disabled="scanning" @click="start('full')"
+                title="读取已有结果，并自动补扫目录里新增的照片">开始整理</button>
         <button v-if="state?.photos?.length" class="ghost" :disabled="scanning"
                 :class="{ danger: confirmReset }"
-                title="清除该目录的缓存与全部人工决策，从零重新整理"
+                title="清空该目录的缓存与全部人工标记，从零重新扫描"
                 @click="start('reset')">
-          {{ confirmReset ? '确认清除并重来' : '强制重新整理' }}
+          {{ confirmReset ? '确认重新整理' : '重新整理' }}
         </button>
         <button v-if="confirmReset" class="ghost" @click="confirmReset = false">取消</button>
+        <button class="ghost" title="查看模型是否就绪，可单独下载"
+                @click="showModels = !showModels; checkSys()">模型</button>
       </div>
       <div v-if="confirmReset" class="hintbar" style="text-align:left;border-color:var(--warn)">
-        将删除 <code>{{ folder }}\.jurymate\</code> 里的扫描结果、缩略图缓存与全部
-        <b>人工召回 / 「全要」</b> 标记，然后从零重新整理。
-        已归档到 winners/ 与 rejects/ 的照片不会被动。
+        将删除该目录的扫描结果、缩略图缓存与全部<b>人工标记</b>，然后从零重新扫描。
+        已复制到 winners/ 的照片不会被动。
       </div>
       <div style="margin-top: 10px; font-size: 12px; color: var(--dim)">
         最近：<template v-for="(d, i) in recent.slice(0, 3)" :key="d"><a href="#"
@@ -171,8 +173,14 @@ const etaText = () => {
       <div v-if="errMsg" class="hintbar" style="text-align:left;border-color:var(--bad)">
         <b style="color:var(--bad)">无法继续：{{ errMsg }}</b>
         <div v-if="errHint" style="margin-top:6px;color:var(--dim);font-size:12px">{{ errHint }}</div>
-        <div style="margin-top:8px;font-size:12px">
-          下方「模型就绪检查」可直接下载；国内网络建议先开镜像站或填代理。
+        <!-- 只有真的是模型缺失才提下载；其它错误（比如代码异常）说这句话是误导 -->
+        <div v-if="errKind === 'model'" style="margin-top:8px;font-size:12px">
+          <button class="ghost" style="padding:3px 12px;font-size:12px"
+                  @click="showModels = true; checkSys()">打开模型检查</button>
+          <span class="dim" style="margin-left:8px">国内网络建议先在设置里开镜像站或填代理。</span>
+        </div>
+        <div v-else style="margin-top:8px;font-size:12px;color:var(--dim)">
+          这是程序内部错误，不是模型问题。日志在数据目录 logs/backend.log，可反馈给开发者。
         </div>
       </div>
       <div v-if="(sys && (showModels || hasMissingModel)) || showModels" class="hintbar" style="text-align:left">

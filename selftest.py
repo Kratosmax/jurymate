@@ -92,7 +92,8 @@ def main():
         # 3) state 校验
         st = api("/api/state")
         photos, groups = st.get("photos", []), st.get("groups", [])
-        check("照片数 = 9", len(photos) == 9, f"实际 {len(photos)}")
+        n_arw = len([f for f in Path(os.environ["JURYMATE_TEST_DIR"]).iterdir() if f.is_file() and f.suffix.lower() in (".arw", ".cr2", ".nef", ".dng")])
+        check(f"照片数 = {n_arw}", len(photos) == n_arw, f"实际 {len(photos)}")
         check("分组非空", len(groups) >= 1, f"{len(groups)} 组")
 
         # 用户痛点回归：背影人像不许被判"失焦"

@@ -293,36 +293,32 @@ def start():
                 except Exception as e:
                     log.warning("reset: 清理 %s 失败（继续全量重扫）：%s", sd, e)
                 TASK.update(stage="已清除缓存，从零重新整理…")
-            # 增量：同目录已有人工决策，只补新图。
-            # 磁盘 state 是唯一事实源——用户删掉它 = 明确要重置，内存旧态
-            # （含 manual_winner）必须作废、退化为全量重扫。
-            # （实测教训：删磁盘缓存后点增量补扫，内存旧态的"人工召回"永远残留）
-            if incremental and not reset and STATE["photos"] \
-                    and Path(STATE["folder"]).resolve() == Path(folder).resolve():
-                with _SNAPSHOT_LOCK:
-                    STATE.update(photos=[], groups=[])
+            # 「开始整理」= 读缓存 + 自动补扫新文件。
+            # 旧行为是 load_state 成功就直接 return，导致用户往目录里加了新照片
+            # 再点开始整理，界面还是旧结果——必须补扫。
+            # 磁盘 state 是唯一事实源：用户删了它 = 明确要重置，退化为全量重扫。
+            if not reset:
+                if STATE["photos"] and STATE["folder"] \
+                        and Path(STATE["folder"]).resolve() != Path(folder).resolve():
+                    with _SNAPSHOT_LOCK:
+                        STATE.update(photos=[], groups=[])
+                if not STATE["photos"]:
                     load_state(folder)
-                    do_incremental = bool(STATE["photos"])   # 磁盘无 state → 退化为全量
-                if do_incremental:
-                    # 增量要推理新图，必须先确认模型齐备
-                    TASK.update(stage="检查模型…")
-                    preflight_models()
-                    # 管线跑几分钟，不能持锁——否则 /api/state 全程阻塞、界面假死。
-                    # 它原地扩展 photos/groups，读侧靠 _SNAPSHOT_LOCK 的浅拷贝兜住。
-                    n_new = pipeline.add_new_photos(
-                        folder, STATE["photos"], STATE["groups"],
-                        Path(folder) / paths.STATE_DIRNAME, STATE["settings"], progress)
+                if STATE["photos"]:
+                    with _SNAPSHOT_LOCK:
+                        refresh_statuses()
+                    TASK.update(stage="检查新照片…")
+                    try:
+                        n_new = pipeline.add_new_photos(
+                            folder, STATE["photos"], STATE["groups"],
+                            Path(folder) / paths.STATE_DIRNAME, STATE["settings"], progress)
+                    except errors.ModelUnavailable:
+                        raise
                     with _SNAPSHOT_LOCK:
                         TASK.update(done=len(STATE["photos"]), total=len(STATE["photos"]),
-                                    stage=f"增量完成：新增 {n_new} 张")
+                                    stage=(f"完成：新增 {n_new} 张" if n_new else "已是最新，无需补扫"))
                         save_state()
                     return
-            # 从磁盘恢复进度（跨会话续做）——纯读 state，不推理，不需要模型；
-            # 召回补评分时才用 musiq，那条路径自己会报 ModelUnavailable
-            if load_state(folder):
-                refresh_statuses()
-                save_state()
-                return
             # 全量扫描：需要全套模型，缺了立刻失败而不是产出"无人脸"的空结果
             TASK.update(stage="检查模型…")
             preflight_models()

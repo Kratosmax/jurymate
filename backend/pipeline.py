@@ -294,13 +294,16 @@ def decide_group(members: list[int], photos: list[dict], settings: dict,
         ph = photos[i]
         ph["group_id"] = gid
         ph.setdefault("manual_winner", False)   # fresh 图显式落字段，消除 state 歧义
-        if ph["aesthetic"] is not None and ph["aesthetic"] < min_score \
+        # 用 .get：硬淘汰的照片不会进 score_candidates，因此根本没有
+        # "aesthetic" 这个键。直接下标会 KeyError（用户实测报 "无法继续: 'aesthetic'"）。
+        aes = ph.get("aesthetic")
+        if aes is not None and aes < min_score \
                 and "低分" not in ph["reject_reasons"]:
             ph["reject_reasons"].append("低分")
-            ph["score"] = composite_score(ph, ph["aesthetic"], ph["reject_reasons"])
-    ranked = sorted(members, key=lambda i: -photos[i]["score"])
+            ph["score"] = composite_score(ph, aes, ph["reject_reasons"])
+    ranked = sorted(members, key=lambda i: -photos[i].get("score", 0.0))
     winner = ranked[0]
-    gap = (photos[ranked[0]]["score"] - photos[ranked[1]]["score"]) \
+    gap = (photos[ranked[0]].get("score", 0.0) - photos[ranked[1]].get("score", 0.0)) \
         if len(ranked) > 1 else 99.0
     for i in members:
         if i != winner and not photos[i]["reject_reasons"]:
