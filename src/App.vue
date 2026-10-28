@@ -143,7 +143,6 @@ import SettingsView from './views/SettingsView.vue'
 
 type Page = 'home' | 'pk' | 'winners' | 'review' | 'settings'
 const page = ref<Page>('home')
-const pageAnim = ref(false)
 const S = ref<import('./api').State | null>(null)
 const toastMsg = ref('')
 let toastTimer: ReturnType<typeof setTimeout> | undefined
@@ -166,12 +165,21 @@ async function refresh() {
 function go(p: Page) {
   if (p === page.value) return
   page.value = p
-  // 切页时让内容轻轻浮上来：v-show 不会重放 CSS 动画，所以用一个瞬时
-  // 开关类强制重排后再挂上动画。时长跟 --dur-3 对齐，避免两套节奏。
-  pageAnim.value = false
-  requestAnimationFrame(() => {
-    pageAnim.value = true
-    setTimeout(() => (pageAnim.value = false), 320)
+  // 切页动画必须在"DOM 已更新、但还没绘制"这一瞬间启动（nextTick）。
+  // 之前用 requestAnimationFrame，那是下一帧绘制之后才跑——用户会先看到
+  // 新页面完整出现，再被动画拉回 opacity:0 重放一次，表现为"闪一下/抖一下"。
+  nextTick(() => {
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return
+    const el = Array.from(
+      document.querySelectorAll<HTMLElement>('.view-host .view'),
+    ).find((e) => e.offsetParent !== null)
+    el?.animate(
+      [
+        { opacity: 0, transform: 'translateY(8px)' },
+        { opacity: 1, transform: 'none' },
+      ],
+      { duration: 260, easing: 'cubic-bezier(.16, 1, .3, 1)' },
+    )
   })
 }
 
@@ -233,7 +241,7 @@ onMounted(() => {
     </div>
   </nav>
   <div class="main">
-    <div class="view-host" :class="{ pagein: pageAnim }">
+    <div class="view-host">
       <HomeView v-show="page === 'home'" :state="S" @go="go" @toast="toast" @refresh="refresh" />
       <DecideView v-show="page === 'pk'" :state="S" @done="refresh" @toast="toast" />
       <WinnersView v-show="page === 'winners'" :state="S" @changed="refresh" @toast="toast" />

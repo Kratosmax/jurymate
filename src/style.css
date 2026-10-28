@@ -1,4 +1,4 @@
-:root {
+﻿:root {
   --bg: #121214;
   --bg2: #1a1a1e;
   --panel: #1f1f24;
@@ -444,9 +444,3 @@ button:disabled { opacity: .45; cursor: not-allowed; }
               transform var(--dur-2) var(--ease-exit);
 }
 
-/* 切页：内容从下方 8px 浮上来，配合导航高亮切换，避免"啪"一下换掉 */
-@keyframes page-in {
-  from { opacity: 0; transform: translateY(8px); }
-  to   { opacity: 1; transform: none; }
-}
-.view-host.pagein .view { animation: page-in var(--dur-3) var(--ease-emphasized); }
