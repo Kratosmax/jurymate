@@ -12,7 +12,33 @@
   --warn: #e2b93b;
   --bad: #e05555;
   --radius: 10px;
+
+  /* ---- 动效令牌（Motion tokens） ----
+     参照 iOS / HarmonyOS 的动效分层：
+     · standard   常规进出场，起步快、收尾稳（iOS 默认曲线）
+     · emphasized 强调型，长距离位移与弹出，尾巴更长
+     · spring     轻微过冲，用于可点/可拖元素，制造"物理感"
+     · exit       退场，加速离开，不等它
+     时长按"距离越远越慢"分四档，禁止随手写 0.3s。 */
+  --dur-1: 120ms;   /* 按下、颜色微变 */
+  --dur-2: 200ms;   /* 悬停、勾选、描边 */
+  --dur-3: 280ms;   /* 卡片、面板、toast */
+  --dur-4: 420ms;   /* 进度条、大位移 */
   --ease: cubic-bezier(.22, .8, .3, 1);
+  --ease-standard: cubic-bezier(.2, 0, 0, 1);
+  --ease-emphasized: cubic-bezier(.16, 1, .3, 1);
+  --ease-spring: cubic-bezier(.34, 1.56, .64, 1);
+  --ease-exit: cubic-bezier(.4, 0, 1, 1);
+}
+
+/* 系统开了"减少动态效果"就全部关掉——这是无障碍底线，不是可选项 */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body, #app { height: 100%; }
@@ -41,7 +67,22 @@ body {
   width: 100%; font-size: 14px; text-align: left; transition: background .15s var(--ease), color .15s;
 }
 .nav-item:hover { background: var(--panel); color: var(--txt); }
-.nav-item.on { background: linear-gradient(135deg, var(--acc2), var(--acc)); color: #fff; font-weight: 600; }
+/* 选中态由会滑动的 .nav-pill 承担（见 App.vue），这里只改字色 */
+.nav-item.on { color: #fff; font-weight: 600; background: none; }
+.nav-item.on:hover { background: none; }
+.nav-pill {
+  position: absolute;
+  left: 12px; right: 12px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--acc2), var(--acc));
+  pointer-events: none;
+  z-index: 0;
+  transition: top var(--dur-3) var(--ease-spring),
+              height var(--dur-3) var(--ease-spring),
+              opacity var(--dur-2) var(--ease-standard);
+}
+.side { position: relative; }
+.nav-item { position: relative; z-index: 1; }
 .nav-item .k { margin-left: auto; font-size: 11px; opacity: .55; }
 .nav-item .badge { background: var(--acc); color: #fff; border-radius: 9px; font-size: 10px; padding: 1px 7px; margin-left: auto; }
 .side-foot { margin-top: auto; font-size: 11px; color: var(--dim); padding: 10px; }
@@ -237,37 +278,80 @@ button.danger:hover { filter: brightness(1.1); }
 }
 .wreadout b { color: var(--acc); font-size: 15px; }
 .wreadout .sep { margin: 0 8px; opacity: .5; }
-/* 滑杆动画：填充色随位置在「清晰蓝 → 审美紫」之间过渡，
-   拇指拖动时放大并发光，松手回弹。--hue 由组件按权重算出来。 */
-.wslider {
-  -webkit-appearance: none;
-  width: 100%;
+/* ---- 自绘滑杆 ----
+   原生 input 只负责 step=5 的取值与键盘操作（透明覆盖在轨道上）；
+   轨道填充和拇指都用 visual（弹簧插值）定位，所以看到的是连续运动，
+   但落点严格是 0/5/10…100。 */
+.wstage {
+  position: relative;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  --hue: 218;
+}
+.wtrack {
+  position: absolute;
+  left: 0; right: 0;
   height: 8px;
   border-radius: 4px;
-  outline: none;
-  cursor: pointer;
+  background: #3a3f47;
+  overflow: hidden;
+}
+.wfill {
+  height: 100%;
+  border-radius: 4px;
   background: linear-gradient(90deg,
-    hsl(var(--hue, 218) 90% 62%) var(--fill, 50%),
-    #3a3f47 var(--fill, 50%));
-  transition: background .45s cubic-bezier(.34, 1.4, .64, 1);
+    hsl(calc(var(--hue) - 18) 90% 62%),
+    hsl(var(--hue) 90% 62%));
+  transition: background var(--dur-3) var(--ease-standard);
 }
-.wslider::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  width: 20px;
-  height: 20px;
+.wknob {
+  position: absolute;
+  top: 50%;
+  width: 20px; height: 20px;
+  margin-left: -10px;
+  transform: translateY(-50%);
   border-radius: 50%;
-  background: radial-gradient(circle at 35% 30%, #fff, hsl(var(--hue, 218) 90% 72%));
-  border: 3px solid hsl(var(--hue, 218) 90% 62%);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, .4);
-  transition: transform .22s cubic-bezier(.34, 1.56, .64, 1),
-              box-shadow .22s ease;
+  background: radial-gradient(circle at 35% 30%, #fff, hsl(var(--hue) 90% 72%));
+  border: 3px solid hsl(var(--hue) 90% 62%);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .45);
+  pointer-events: none;
+  /* 松手后从手指位置"滑"到最近的 5 的倍数——带一点点过冲，像 iOS 的滑块 */
+  transition: left var(--dur-3) var(--ease-spring),
+              transform var(--dur-2) var(--ease-spring),
+              box-shadow var(--dur-2) var(--ease-standard);
 }
-.wslider:hover::-webkit-slider-thumb { transform: scale(1.12); }
-.wslider:active::-webkit-slider-thumb {
-  transform: scale(1.35);
-  box-shadow: 0 0 0 8px hsl(var(--hue, 218) 90% 62% / .18),
-              0 2px 14px hsl(var(--hue, 218) 90% 55% / .7);
+/* 拖动过程中不能有过渡，否则拇指会落后于手指 */
+.wstage.on .wknob {
+  transition: transform var(--dur-2) var(--ease-spring),
+              box-shadow var(--dur-2) var(--ease-standard);
 }
+.wstage:hover .wknob { transform: translateY(-50%) scale(1.10); }
+.wstage.on .wknob {
+  transform: translateY(-50%) scale(1.28);
+  box-shadow: 0 0 0 8px hsl(var(--hue) 90% 62% / .18),
+              0 2px 14px hsl(var(--hue) 90% 55% / .7);
+}
+/* 原生 input 只负责键盘（Tab 聚焦 + 方向键），指针拖动由 .wstage 接管 */
+.wnative {
+  position: absolute;
+  left: 0; right: 0;
+  width: 100%;
+  height: 28px;
+  margin: 0;
+  opacity: 0;
+  pointer-events: none;
+  -webkit-appearance: none;
+  background: transparent;
+}
+.wnative::-webkit-slider-runnable-track {
+  /* appearance:none 之后原生轨道会塌成 0 高，点不到也拖不动；
+     这里给它撑满 28px 的命中区（视觉由 .wtrack/.wknob 负责） */
+  height: 28px;
+  background: transparent;
+}
+.wnative::-webkit-slider-thumb { -webkit-appearance: none; width: 28px; height: 28px; }
 .slider-labels {
   display: flex;
   justify-content: space-between;
@@ -294,3 +378,75 @@ button.danger:hover { filter: brightness(1.1); }
 
 /* ---- 卡片评分明细 ---- */
 .card .mets { color: var(--dim); }
+
+/* ============================================================
+   动效层：统一按钮 / 卡片 / 提示 / 进度 / 缩略图的手感
+   规则与 iOS、HarmonyOS 一致——
+   1) 可点元素按下要"陷下去"一点（transform scale），松手弹回；
+   2) 出现用 emphasized（尾巴长），消失用 exit（加速离开）；
+   3) 距离越远时长越长，不搞一刀切。
+   ============================================================ */
+button {
+  transition: transform var(--dur-1) var(--ease-spring),
+              background var(--dur-2) var(--ease-standard),
+              border-color var(--dur-2) var(--ease-standard),
+              color var(--dur-2) var(--ease-standard),
+              opacity var(--dur-2) var(--ease-standard);
+}
+button:active:not(:disabled) { transform: scale(.97); }
+button:disabled { opacity: .45; cursor: not-allowed; }
+
+.nav-item {
+  transition: background var(--dur-2) var(--ease-standard),
+              color var(--dur-2) var(--ease-standard);
+}
+.nav-item:active { transform: scale(.985); }
+
+.grid .card {
+  transition: transform var(--dur-2) var(--ease-emphasized),
+              border-color var(--dur-2) var(--ease-standard),
+              box-shadow var(--dur-2) var(--ease-standard);
+}
+.grid .card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, .35);
+}
+
+.modecard {
+  transition: transform var(--dur-2) var(--ease-spring),
+              border-color var(--dur-2) var(--ease-standard),
+              background var(--dur-2) var(--ease-standard);
+}
+
+.prog > div { transition: width var(--dur-4) var(--ease-emphasized); }
+
+.thumb {
+  transition: opacity var(--dur-2) var(--ease-standard),
+              border-color var(--dur-2) var(--ease-standard),
+              transform var(--dur-2) var(--ease-spring);
+}
+.thumb.on { transform: translateY(-3px); }
+
+/* 提示条 / 分区出现时轻轻浮上来，避免硬切 */
+@keyframes rise-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+.hintbar { animation: rise-in var(--dur-3) var(--ease-emphasized) both; }
+
+/* toast：出现带一点过冲，消失干脆 */
+.toast-enter-active {
+  transition: opacity var(--dur-3) var(--ease-emphasized),
+              transform var(--dur-3) var(--ease-spring);
+}
+.toast-leave-active {
+  transition: opacity var(--dur-2) var(--ease-exit),
+              transform var(--dur-2) var(--ease-exit);
+}
+
+/* 切页：内容从下方 8px 浮上来，配合导航高亮切换，避免"啪"一下换掉 */
+@keyframes page-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: none; }
+}
+.view-host.pagein .view { animation: page-in var(--dur-3) var(--ease-emphasized); }

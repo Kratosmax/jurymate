@@ -169,6 +169,43 @@ async function saveNet() {
 // scoreMode 默认空 = 还没选。没选之前不加载、不下载任何评分模型。
 const scoreMode = ref<'' | 'aesthetic' | 'quality'>('')
 const weight = ref(50)
+
+// ---- 滑杆：手指跟随 + 松手吸附 ----
+// 值仍然是 step=5（0/5/10…100），但拇指在拖动过程中"贴着手指走"（连续），
+// 松手时才用弹簧曲线滑到最近的 5 的倍数。这样既保住步进，又没有跳变感。
+const visual = ref(50)
+const dragging = ref(false)
+
+function ratioAt(e: PointerEvent | MouseEvent): number {
+  const el = e.currentTarget as HTMLElement
+  const r = el.getBoundingClientRect()
+  return Math.max(0, Math.min(100, ((e.clientX - r.left) / r.width) * 100))
+}
+function onSliderDown(e: PointerEvent) {
+  dragging.value = true
+  ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+  const r = ratioAt(e)
+  visual.value = r
+  weight.value = Math.round(r / 5) * 5
+}
+function onSliderMove(e: PointerEvent) {
+  if (!dragging.value) return
+  const r = ratioAt(e)
+  visual.value = r
+  weight.value = Math.round(r / 5) * 5
+}
+function onSliderUp() {
+  if (!dragging.value) return
+  dragging.value = false
+  visual.value = weight.value   // 交给 CSS 的弹簧过渡去落位
+  saveWeight()
+}
+/** 键盘操作：方向键改值后直接落位并保存 */
+function snapAndSave() {
+  visual.value = weight.value
+  saveWeight()
+}
+const sliderHue = computed(() => Math.round(200 + visual.value * 0.8))
 const sys = ref<any>(null)
 const models = computed<any[]>(() => Array.isArray(sys.value?.models) ? sys.value.models : [])
 const depModels = computed<any[]>(() =>
@@ -207,6 +244,7 @@ async function checkSys() {
     scoreMode.value = s.score_mode === 'quality' ? 'quality'
       : s.score_mode === 'aesthetic' ? 'aesthetic' : ''
     weight.value = Number(s.score_weight ?? 50)
+    visual.value = weight.value       // 初次载入直接落位，不要从 50 扫过去
   } catch {}
 }
 
@@ -239,8 +277,6 @@ async function confirmDownloadMode() {
 }
 
 async function saveWeight() {
-  // 拖动时 step=1 连续跟手，松手才吸附到 5 的倍数；后端仍只接受 5 的倍数
-  weight.value = Math.round(weight.value / 5) * 5
   const r = await api.settingsSave({ score_weight: weight.value })
   if (!r.ok) { emit('toast', r.error || '保存失败'); return }
   rescoreAsk.value = true
@@ -640,11 +676,17 @@ onMounted(boot)
         <div class="wreadout">
           审美 <b>{{ weight }}%</b><span class="sep">／</span>清晰 <b>{{ 100 - weight }}%</b>
         </div>
-        <!-- step=1 让拖动连续跟手；松手时才吸附到 5 的倍数（见 saveWeight），
-             原生 step=5 会一格一格跳，看着像卡顿 -->
-        <input class="wslider" type="range" min="0" max="100" step="1"
-               :style="{ '--fill': weight + '%', '--hue': Math.round(200 + weight * 0.8) }"
-               v-model.number="weight" @change="saveWeight" />
+        <!-- 自绘轨道 + 拇指：原生 input 只有 step=5 的语义与键盘可达性，
+             视觉位置由 visual（弹簧插值）驱动，所以拖动是连续的、落点是 5 的倍数 -->
+        <div class="wstage" :class="{ on: dragging }" :style="{ '--hue': sliderHue }"
+             @pointerdown="onSliderDown" @pointermove="onSliderMove"
+             @pointerup="onSliderUp" @pointercancel="onSliderUp">
+          <div class="wtrack"><div class="wfill" :style="{ width: visual + '%' }" /></div>
+          <div class="wknob" :style="{ left: visual + '%' }" />
+          <input class="wnative" type="range" min="0" max="100" step="5"
+                 v-model.number="weight" aria-label="审美与清晰的权重"
+                 @change="snapAndSave" />
+        </div>
         <div class="slider-labels">
           <span>更看重清晰度</span>
           <span class="mid">按住左右拖动</span>

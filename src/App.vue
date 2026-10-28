@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { api } from './api'
 import { check, type Update } from '@tauri-apps/plugin-updater'
 import { relaunch } from '@tauri-apps/plugin-process'
@@ -143,6 +143,7 @@ import SettingsView from './views/SettingsView.vue'
 
 type Page = 'home' | 'pk' | 'winners' | 'review' | 'settings'
 const page = ref<Page>('home')
+const pageAnim = ref(false)
 const S = ref<import('./api').State | null>(null)
 const toastMsg = ref('')
 let toastTimer: ReturnType<typeof setTimeout> | undefined
@@ -163,7 +164,15 @@ async function refresh() {
   S.value = await api.state()
 }
 function go(p: Page) {
+  if (p === page.value) return
   page.value = p
+  // 切页时让内容轻轻浮上来：v-show 不会重放 CSS 动画，所以用一个瞬时
+  // 开关类强制重排后再挂上动画。时长跟 --dur-3 对齐，避免两套节奏。
+  pageAnim.value = false
+  requestAnimationFrame(() => {
+    pageAnim.value = true
+    setTimeout(() => (pageAnim.value = false), 320)
+  })
 }
 
 // 侧栏数字改成"这一页有多少东西"，比快捷键提示有用得多。
@@ -179,6 +188,20 @@ const navCount = computed<Record<string, number>>(() => {
   } as Record<string, number>
 })
 
+// 侧栏选中块：像 iOS 标签栏一样在项目之间滑动，而不是整块瞬间换位置
+const navEl = ref<HTMLElement | null>(null)
+const pill = ref({ top: 0, height: 0, show: false })
+function syncPill() {
+  const el = navEl.value?.querySelector('.nav-item.on') as HTMLElement | null
+  if (!el) { pill.value.show = false; return }
+  pill.value = { top: el.offsetTop, height: el.offsetHeight, show: true }
+}
+watch(page, () => nextTick(syncPill))
+onMounted(() => {
+  nextTick(syncPill)
+  window.addEventListener('resize', syncPill)
+})
+
 onMounted(() => {
   refresh()
   checkUpdate(true)   // 启动静默检查
@@ -191,7 +214,8 @@ onMounted(() => {
 </script>
 
 <template>
-  <nav class="side">
+  <nav class="side" ref="navEl">
+    <div v-if="pill.show" class="nav-pill" :style="{ top: pill.top + 'px', height: pill.height + 'px' }" />
     <div class="brand">⚖️ Jury<em>Mate</em></div>
     <div class="brand-sub">AI 陪审 · 你是法官</div>
     <button v-for="p in pages" :key="p.id" class="nav-item" :class="{ on: page === p.id }" @click="go(p.id)">
@@ -209,7 +233,7 @@ onMounted(() => {
     </div>
   </nav>
   <div class="main">
-    <div class="view-host">
+    <div class="view-host" :class="{ pagein: pageAnim }">
       <HomeView v-show="page === 'home'" :state="S" @go="go" @toast="toast" @refresh="refresh" />
       <DecideView v-show="page === 'pk'" :state="S" @done="refresh" @toast="toast" />
       <WinnersView v-show="page === 'winners'" :state="S" @changed="refresh" @toast="toast" />
