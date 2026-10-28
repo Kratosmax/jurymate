@@ -196,7 +196,7 @@ async function onKey(e: KeyboardEvent) {
       <div class="pkhead">
         <div class="pkmeta">
           第 <b>{{ pos + 1 }}/{{ queue.length }}</b> 组 · {{ group.members.length }} 张
-          <span v-if="group.gap < 99">· 前两名分差 <b>{{ group.gap }}</b> 分</span>
+          <span v-if="group.gap < 99">· 前两名分差 <b>{{ Math.round(group.gap) }}</b> 分</span>
         </div>
         <!-- 模式切换：右上角两个图标 -->
         <div class="modesw">

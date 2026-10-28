@@ -128,6 +128,8 @@ try {
             --hidden-import=insightface.app `
             --hidden-import=insightface.utils.face_align `
             --hidden-import=pyiqa.archs.musiq_arch `
+            --hidden-import=pyiqa.archs.nima_arch `
+            --collect-submodules=pyiqa.archs `
             --hidden-import=torchvision.extension `
             --hidden-import=torchvision._internally_replaced_utils `
             --add-binary="$tvC;torchvision" `

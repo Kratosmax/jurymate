@@ -51,6 +51,7 @@ if sys.stderr is None:
     sys.stderr = _NullIO()
 
 
+import aesthetic
 import errors
 import paths
 import pipeline
@@ -162,8 +163,17 @@ def snapshot_state() -> tuple[list, list]:
         return list(STATE["photos"]), list(STATE["groups"])
 
 DEFAULT_SETTINGS = {
-    "burst_gap": 3.0, "phash_dist": 10, "pk_gap": 0.35,
-    "min_score": 2.0, "ear_closed": 0.18, "ear_open": 0.25,
+    "burst_gap": 3.0, "phash_dist": 10, "pk_gap": 7.0,
+    # 100 分制：40 分以下判"低分"
+    "min_score": 40.0, "ear_closed": 0.18, "ear_open": 0.25,
+    # 评分模式：默认空 = 还没选。没选之前不加载、不下载任何评分模型，
+    # 由设置页让用户显式二选一，选完才开始下载对应权重。
+    #   aesthetic = NIMA（快，评构图/光影/氛围）
+    #   quality   = MUSIQ（慢，评画质/噪点/压缩）
+    "score_mode": "",
+    # 综合分里"审美"的权重（0-100，步进 5），剩余给清晰度。
+    # 默认 50 即 100:100（1:1）。界面不展示这个比例，只在计算时生效。
+    "score_weight": 50,
     # 解码线程数。0 = 由程序自动决定（min(8, CPU 核数)）。
     # 实测瓶颈是 RAW 解码（人脸 279ms/张、审美 348ms/张，其余是解码），
     # 解码是 I/O+CPU 混合且 rawpy 不持 GIL，加线程确实能加快。
@@ -177,7 +187,9 @@ def state_file() -> Path | None:
     d.mkdir(exist_ok=True)
     return d / "state.json"
 
-STATE_VERSION = 2   # 评分映射/状态机变更时 +1；旧版本 state 直接弃用重扫
+STATE_VERSION = 3   # 评分映射/状态机变更时 +1；旧版本 state 直接弃用重扫
+                    # v3：100 分制改为「模型各自尺子」（NIMA×10 / MUSIQ 原值），
+                    #     旧分数口径不同，一律作废重扫。
 
 def save_state():
     f = state_file()
@@ -244,16 +256,24 @@ def preflight_models():
     更重要的是——如果模型缺了却让用户以为"整理完成"，结果里所有人脸信号
     都是空的，比直接报错难排查得多。
     """
-    missing = [m for m in models_mod.models() if not models_mod._installed(m)]
+    mode = STATE["settings"].get("score_mode") or ""
+    if not mode:
+        raise errors.ModelUnavailable(
+            "评分模型（未选择）", "还没有选择评分模式",
+            "请在「设置 → 评分模型」里选择「审美优先」或「画质优先」")
+    need_score_id = "nima" if mode == "aesthetic" else "musiq"
+    # 只要求"当前评分模式"对应的那一个评分模型，不能因为另一个没下载就拦下扫描
+    required = [m for m in models_mod.models()
+                if m["id"] in ("face_landmarker", "buffalo_l", need_score_id)]
+    missing = [m for m in required if not models_mod._installed(m)]
     if missing:
-        # 数量多时只列前两个，避免提示条过长
         names = "、".join(m["name"] for m in missing[:2])
         if len(missing) > 2:
             names += f" 等 {len(missing)} 个"
         raise errors.ModelUnavailable(
             names,
             detail="尚未下载",
-            hint="请在首页「模型就绪检查」逐个点下载；国内网络可在网络设置里开启镜像站或填代理",
+            hint="请在「设置 → 模型」里点下载；国内网络可在网络设置里开启镜像站或填代理",
         )
 
 @app.route("/api/start", methods=["POST"])
@@ -267,6 +287,10 @@ def start():
     reset = bool(body.get("reset"))
     if not folder or not Path(folder).is_dir():
         return jsonify({"ok": False, "error": "目录不存在"}), 400
+    # 没选评分模式就不该开跑：既算不出分，也没有对应的模型可加载。
+    # 用 need_mode 让前端直接跳到设置页，而不是弹一句用户看不懂的报错。
+    if not (STATE["settings"].get("score_mode") or ""):
+        return jsonify({"ok": False, "error": "请先选择评分模式", "need_mode": True}), 400
     with _LOCK:
         if TASK["running"]:
             return jsonify({"ok": False, "error": "任务进行中"}), 409
@@ -307,6 +331,21 @@ def start():
                 if STATE["photos"]:
                     with _SNAPSHOT_LOCK:
                         refresh_statuses()
+                    mode_now = STATE["settings"].get("score_mode") or ""
+                    # 评分模式换过但还没重算：旧分数是另一个模型给的，
+                    # 直接增量补扫会让新旧口径混在一张表里，所以先把缓存里的
+                    # 全部分数用当前模型刷一遍（复用 view.jpg，不重新解码 RAW）。
+                    if STATE.get("scored_mode") != mode_now:
+                        aesthetic.set_mode(mode_now)
+                        preflight_models()
+                        TASK.update(stage="评分模式已变更，重新评分…")
+                        pipeline.score_candidates(
+                            STATE["photos"], Path(folder) / paths.STATE_DIRNAME,
+                            STATE["settings"], progress, report_all=len(STATE["photos"]))
+                        with _SNAPSHOT_LOCK:
+                            pipeline.rescore(STATE["photos"], STATE["groups"],
+                                             STATE["settings"])
+                            STATE["scored_mode"] = mode_now
                     TASK.update(stage="检查新照片…")
                     try:
                         n_new = pipeline.add_new_photos(
@@ -321,6 +360,7 @@ def start():
                     return
             # 全量扫描：需要全套模型，缺了立刻失败而不是产出"无人脸"的空结果
             TASK.update(stage="检查模型…")
+            aesthetic.set_mode(STATE["settings"].get("score_mode") or "")
             preflight_models()
             with _SNAPSHOT_LOCK:
                 STATE.update(photos=[], groups=[])
@@ -329,6 +369,7 @@ def start():
                                   STATE["settings"], progress)
             with _SNAPSHOT_LOCK:
                 STATE.update(photos=result["photos"], groups=result["groups"])
+                STATE["scored_mode"] = STATE["settings"].get("score_mode") or ""
                 refresh_statuses()
                 save_state()
         except errors.ModelUnavailable as e:
@@ -348,6 +389,66 @@ def progress_api():
     return jsonify({k: TASK[k] for k in ("running", "done", "total", "stage",
                                              "error", "error_kind", "error_hint")})
 
+
+@app.route("/api/rescore", methods=["POST"])
+def rescore_api():
+    """按当前设置重算综合分与组内排序。
+
+    - 只改了权重：纯重算，毫秒级，不碰模型。
+    - 换了评分模式：分数本身要换模型重算（复用已解压的 view.jpg，不重新解码
+      RAW、不重新检脸），NIMA 约 6 秒、MUSIQ 约 55 秒。
+    """
+    with _LOCK:
+        if TASK["running"]:
+            return jsonify({"ok": False, "error": "任务进行中"}), 409
+    if not STATE["photos"]:
+        return jsonify({"ok": False, "error": "还没有可重算的结果"}), 400
+    mode = STATE["settings"].get("score_mode") or ""
+    if not mode:
+        return jsonify({"ok": False, "error": "请先选择评分模式", "need_mode": True}), 400
+
+    need_model = STATE.get("scored_mode") != mode
+    if not need_model:
+        with _SNAPSHOT_LOCK:
+            pipeline.rescore(STATE["photos"], STATE["groups"], STATE["settings"])
+            refresh_statuses()
+            save_state()
+        log.info("rescore: 仅重算综合分（权重变化）")
+        return jsonify({"ok": True, "rescored": False})
+
+    folder = STATE["folder"]
+    with _LOCK:
+        TASK.update(running=True, done=0, total=0, stage="", error=None,
+                    error_kind=None, error_hint="")
+
+    def worker():
+        try:
+            def progress(done, total, name):
+                TASK.update(done=done, total=total, stage=name)
+            aesthetic.set_mode(mode)
+            preflight_models()
+            photos = STATE["photos"]
+            pipeline.score_candidates(photos, Path(folder) / paths.STATE_DIRNAME,
+                                      STATE["settings"], progress,
+                                      report_all=len(photos))
+            with _SNAPSHOT_LOCK:
+                pipeline.rescore(photos, STATE["groups"], STATE["settings"])
+                STATE["scored_mode"] = mode
+                refresh_statuses()
+                save_state()
+            log.info("rescore: 已用 %s 重新评分 %d 张", mode, len(photos))
+        except errors.ModelUnavailable as e:
+            log.error("重新评分中止（模型不可用）：%s", e)
+            TASK.update(error=str(e), error_kind="model", error_hint=e.hint)
+        except Exception as e:
+            log.exception("重新评分失败")
+            TASK.update(error=str(e), error_kind="other", error_hint="")
+        finally:
+            TASK["running"] = False
+
+    threading.Thread(target=worker, daemon=True).start()
+    return jsonify({"ok": True, "rescored": True})
+
 # 启动就绪状态：前端用它决定是否允许操作。
 # sidecar 是 PyInstaller onefile，启动要解压约 1.1GB，实测十几秒；
 # 这期间前端点「开始整理」是连不上端口的，用户看到的就是"点了没反应"。
@@ -356,8 +457,12 @@ PRELOAD = {"model_ready": False, "model_error": ""}
 
 @app.route("/api/ready", methods=["GET"])
 def api_ready():
-    return jsonify({"ok": True, "model_ready": PRELOAD["model_ready"],
-                    "model_error": PRELOAD["model_error"]})
+    # backend_ready 与 model_ready 分开：没选评分模式时模型永远不会就绪，
+    # 但后端本身是好的，前端不该一直转圈。
+    return jsonify({"ok": True, "backend_ready": True,
+                    "model_ready": PRELOAD["model_ready"],
+                    "model_error": PRELOAD["model_error"],
+                    "score_mode": STATE["settings"].get("score_mode") or ""})
 
 
 @app.route("/api/state")
@@ -375,7 +480,10 @@ def state_api():
         groups.append({k: g.get(k) for k in ("id", "winner", "gap", "needs_pk")}
                       | {"members": members})
     return jsonify({"folder": STATE["folder"], "photos": photos, "groups": groups,
-                    "settings": dict(STATE["settings"])})
+                    "settings": dict(STATE["settings"]),
+                    # 前端据此决定分项标签写「审美」还是「画质」
+                    "score_mode": STATE["settings"].get("score_mode") or "",
+                    "scored_mode": STATE.get("scored_mode") or ""})
 
 @app.route("/api/pk", methods=["POST"])
 def pk():
@@ -452,7 +560,8 @@ def _recall_apply(ph: dict, path: str, ph_aes: float | None = None):
     ph["manual_winner"] = True   # 人工召回 = 持久胜出，后续 refresh 不得覆盖
     if ph_aes is not None:
         ph["aesthetic"] = ph_aes
-    ph["score"] = pipeline.composite_score(ph, ph.get("aesthetic"), [])
+    ph["score"] = pipeline.composite_score(ph, ph.get("aesthetic"), [],
+                                           STATE.get("settings") or {})
     ph["status"] = "winner"
     try:
         sf = state_file()
@@ -696,26 +805,49 @@ def settings_api():
     """
     if request.method == "POST":
         body = request.json or {}
-        raw = body.get("scan_workers")
         cpu = os.cpu_count() or 4
-        try:
-            n = int(raw)
-        except (TypeError, ValueError):
-            return jsonify({"ok": False, "error": "scan_workers 必须是整数"}), 400
-        if n != 0 and not (1 <= n <= cpu):
-            return jsonify({"ok": False,
-                            "error": f"线程数需在 1..{cpu} 之间，或 0 表示自动"}), 400
+        changed = {}
+        if "scan_workers" in body:
+            try:
+                n = int(body["scan_workers"])
+            except (TypeError, ValueError):
+                return jsonify({"ok": False, "error": "scan_workers 必须是整数"}), 400
+            if n != 0 and not (1 <= n <= cpu):
+                return jsonify({"ok": False,
+                                "error": f"线程数需在 1..{cpu} 之间，或 0 表示自动"}), 400
+            changed["scan_workers"] = n
+        if "score_mode" in body:
+            m = str(body["score_mode"])
+            # 空字符串 = 取消选择（例如把当前模式的模型删了）
+            if m and m not in ("aesthetic", "quality"):
+                return jsonify({"ok": False, "error": "未知评分模式"}), 400
+            changed["score_mode"] = m
+        if "score_weight" in body:
+            try:
+                w = int(body["score_weight"])
+            except (TypeError, ValueError):
+                return jsonify({"ok": False, "error": "score_weight 必须是整数"}), 400
+            if not (0 <= w <= 100) or w % 5:
+                return jsonify({"ok": False, "error": "权重需为 0..100 且是 5 的倍数"}), 400
+            changed["score_weight"] = w
+        if not changed:
+            return jsonify({"ok": False, "error": "没有要保存的设置"}), 400
         with _SNAPSHOT_LOCK:
-            STATE["settings"]["scan_workers"] = n
+            STATE["settings"].update(changed)
+            if "score_mode" in changed:
+                aesthetic.set_mode(changed["score_mode"])
         save_state()
-        return jsonify({"ok": True, "scan_workers": n})
+        return jsonify({"ok": True, **changed})
     cpu = os.cpu_count() or 4
     return jsonify({
         "ok": True,
         "scan_workers": int(STATE["settings"].get("scan_workers") or 0),
         "cpu_count": cpu,
-        # 自动模式实际会用到的线程数，让界面能显示"自动（8 线程）"
         "auto_workers": min(8, max(2, cpu)),
+        "score_mode": STATE["settings"].get("score_mode") or "",
+        "score_weight": int(STATE["settings"].get("score_weight", 50)),
+        # 缓存里现有分数是哪个模式算的：前端据此判断改设置后要不要重算
+        "scored_mode": STATE.get("scored_mode") or "",
     })
 
 
@@ -734,6 +866,23 @@ def models_download():
     body = request.json or {}
     r = models_mod.start_download(body.get("id", ""))
     return jsonify({"ok": bool(r), "error": None if r else "下载进行中"})
+
+
+@app.route("/api/models/remove", methods=["POST"])
+def models_remove():
+    """按需删除单个模型。删掉的若是当前评分模式在用的那个，模式自动置空。"""
+    body = request.json or {}
+    mid = str(body.get("id") or "")
+    ok, err = models_mod.remove(mid)
+    if not ok:
+        return jsonify({"ok": False, "error": err}), 400
+    cur = STATE["settings"].get("score_mode") or ""
+    if cur and aesthetic.MODES.get(cur, {}).get("id") == mid:
+        STATE["settings"]["score_mode"] = ""
+        aesthetic.set_mode("")
+        save_state()
+        log.info("models: 当前评分模式 %s 的模型被删除，模式已置空", cur)
+    return jsonify({"ok": True, "score_mode": STATE["settings"].get("score_mode") or ""})
 
 @app.route("/api/paths", methods=["GET", "POST"])
 def paths_api():
@@ -1071,16 +1220,23 @@ def thumbs(p):
 
 
 def _preload_aesthetic() -> None:
-    """后台预加载审美模型。
+    """后台预加载当前评分模式的模型。
 
     MUSIQ 首次创建要读 104MB 权重 + 初始化 torch，实测 20 秒以上。原来是在
     扫描推进到评分阶段才惰性加载，用户看到的就是进度条卡在"加载审美模型"
     很久不动。后端一启动就预热，扫描跑到评分时模型已在内存里。
+
+    没选模式时**什么都不做**：默认不选是产品决定，不能偷偷替用户加载/下载。
     """
     try:
+        mode = STATE["settings"].get("score_mode") or ""
+        if not mode:
+            log.info("未选择评分模式，跳过模型预加载")
+            return
         # app.py 顶部并没有 import aesthetic（只通过 pipeline 间接用到），
         # 这里必须自己导入，否则报 name 'aesthetic' is not defined。
         import aesthetic as _aesthetic
+        _aesthetic.set_mode(mode)
         _aesthetic._get()
         PRELOAD["model_ready"] = True
         log.info("审美模型预加载完成")

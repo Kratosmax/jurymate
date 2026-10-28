@@ -13,6 +13,7 @@ export interface Photo {
   n_faces: number
   face_sharpness?: number
   aesthetic: number | null
+  sharp_score?: number | null
   score: number
   reject_reasons: string[]
   status: 'winner' | 'reject' | 'pending'
@@ -34,6 +35,10 @@ export interface State {
   photos: Photo[]
   groups: Group[]
   settings: Record<string, number>
+  /** 当前评分模式：'aesthetic' | 'quality' | ''（未选） */
+  score_mode?: string
+  /** 缓存里现有分数是哪个模式算出来的 */
+  scored_mode?: string
 }
 
 // Tauri webview 的 origin 不是后端：需要绝对 baseUrl；浏览器/vite 模式走相对路径。
@@ -154,6 +159,9 @@ export const api = {
     req<{ ok: boolean; selected?: string; error?: string }>('/api/open_folder', { sub, select }),
   systemDetect: () => req<any>('/api/system/detect'),
   modelsDownload: (id: string) => req<{ ok: boolean; error?: string | null }>('/api/models/download', { id }),
+  // 按需删除单个模型；删的是当前模式的模型时后端会把 score_mode 置空
+  modelsRemove: (id: string) =>
+    req<{ ok: boolean; error?: string; score_mode?: string }>('/api/models/remove', { id }),
   modelsProgress: () => req<{ running: boolean; done: number; total: number; id: string; error: string | null }>('/api/models/progress'),
   netSettingsGet: () => req<{
     use_mirror: boolean; github_mirrors: string[]; http_proxy: string | null
@@ -164,9 +172,14 @@ export const api = {
     req<{ ok: boolean }>('/api/net/settings', { use_mirror, github_mirrors, http_proxy, order }),
   settingsGet: () => req<{
     ok: boolean; scan_workers: number; cpu_count: number; auto_workers: number
+    score_mode?: string; score_weight?: number; scored_mode?: string
   }>('/api/settings'),
-  settingsSave: (scan_workers: number) =>
-    req<{ ok: boolean; scan_workers?: number; error?: string }>('/api/settings', { scan_workers }),
+  settingsSave: (body: { scan_workers?: number; score_mode?: string; score_weight?: number }) =>
+    req<{ ok: boolean; error?: string }>('/api/settings', body),
+  // 重算综合分：只改权重时纯重算；换模式时后端会用新模型重新评分
+  rescore: () =>
+    req<{ ok: boolean; rescored?: boolean; error?: string; need_mode?: boolean }>(
+      '/api/rescore', {}),
   pathsGet: () => req<{
     data_root: string; default_root: string; is_default: boolean; env_override: boolean
     subdirs: { key: string; label: string; path: string; size: number }[]

@@ -25,6 +25,7 @@
 import json
 import logging
 import os
+import shutil
 import threading
 import urllib.request
 from pathlib import Path
@@ -158,13 +159,23 @@ def models() -> list[dict]:
             "size_mb": 330,
             # 与 faces._model_root() 同一处：<数据目录>/insightface/models/buffalo_l
             "path": root / "insightface" / "models" / "buffalo_l",
-            "url": "https://github.com/deepinsight/insightface/releases/download/models/buffalo_l.zip",
+            "url": "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip",
             # 产物是 zip：必须解压成目录，insightface 的 storage.download 也是这么做的
             "unpack": "zip",
         },
         {
+            "id": "nima",
+            "name": "NIMA 审美评分权重（审美优先）",
+            "size_mb": 208,
+            "path": paths.torch_dir() / "hub" / "pyiqa"
+                    / "NIMA_InceptionV2_ava-b0c77c00.pth",
+            "url": ("https://hf-mirror.com/chaofengc/IQA-PyTorch-Weights/resolve/main/"
+                    "NIMA_InceptionV2_ava-b0c77c00.pth"),
+            "unpack": "file",
+        },
+        {
             "id": "musiq",
-            "name": "MUSIQ 审美评分权重",
+            "name": "MUSIQ 画质评分权重（画质优先）",
             "size_mb": 104,
             # pyiqa 按 torch.hub.get_dir()/pyiqa/<url 文件名> 查找；paths.py 已把
             # TORCH_HOME 钉到数据目录，故这里是 <数据目录>/torch/hub/pyiqa/<文件>
@@ -272,6 +283,33 @@ def download(model_id: str) -> None:
         _unpack_zip(zip_path, dest)
     else:
         _download_via_routes(routes, dest, net.get("http_proxy"), DL)
+
+def remove(model_id: str) -> tuple[bool, str]:
+    """删除单个模型的本地权重/目录，用于"按需删除、回到未下载状态"。
+
+    只删自己这一个：用户可能只想腾出 MUSIQ 的 104MB，而不想连人脸模型一起重下。
+    """
+    m = next((x for x in models() if x["id"] == model_id), None)
+    if not m:
+        return False, f"未知模型 {model_id}"
+    if DL["running"]:
+        return False, "下载进行中，请稍后再试"
+    p = Path(m["path"])
+    try:
+        if p.is_dir():
+            shutil.rmtree(p)
+        elif p.exists():
+            p.unlink()
+        # 下载失败留下的半截 .part 也一并清掉，否则占用统计对不上
+        part = p.with_suffix(p.suffix + ".part")
+        if part.exists():
+            part.unlink()
+    except Exception as e:
+        log.warning("models: 删除 %s 失败：%s", model_id, e)
+        return False, f"删除失败：{e}"
+    log.info("models: 已删除 %s（%s）", model_id, p)
+    return True, ""
+
 
 def start_download(model_id: str) -> bool:
     """返回是否真的启动了下载（False = 已有下载在进行）。"""

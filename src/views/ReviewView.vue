@@ -63,8 +63,9 @@ window.addEventListener('keydown', onKey)
         <h3 style="font-size: 14px; color: var(--dim); font-weight: 500; margin-bottom: 8px">{{ t }}（{{ ps.length }}）</h3>
         <div class="grid">
           <PhotoCard v-for="p in ps" :key="p.path" :photo="p"
-                     :score-label="String(p.score ?? '—')"
-                     :note="'综合分（审美分 - 原因惩罚）'"
+                     :score-label="String(Math.round(p.score ?? 0))"
+                     :mode="props.state?.score_mode === 'quality' ? 'quality' : 'aesthetic'"
+                     :note="'综合分（扣掉淘汰原因惩罚后的分数）'"
                      :style="{ cursor: 'pointer' }"
                      @click="recall(p.path)" />
         </div>

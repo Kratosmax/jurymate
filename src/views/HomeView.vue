@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { api, waitBackend, type State } from '../api'
 
 const props = defineProps<{ state: State | null }>()
-const emit = defineEmits<{ go: [p: 'pk' | 'winners' | 'review']; toast: [m: string]; refresh: [] }>()
+const emit = defineEmits<{ go: [p: 'pk' | 'winners' | 'review' | 'settings']; toast: [m: string]; refresh: [] }>()
 
 const folder = ref('')
 const scanning = ref(false)
@@ -37,9 +37,20 @@ function remember(d: string) {
 }
 
 // mode: 'full' 首次/全量 | 'incremental' 只补新图 | 'reset' 清缓存从零重建
+const shake = ref(false)
+const needMode = ref(false)
+
+function shakeFolder() {
+  shake.value = false
+  // 强制重排，让同一个动画能连续触发两次
+  requestAnimationFrame(() => { shake.value = true })
+  setTimeout(() => (shake.value = false), 700)
+  emit('toast', '请先选择目标目录')
+}
+
 async function start(mode: 'full' | 'incremental' | 'reset' = 'full') {
   const f = folder.value.trim()
-  if (!f) return
+  if (!f) { shakeFolder(); return }
   if (mode === 'reset' && !confirmReset.value) {
     confirmReset.value = true
     return
@@ -47,7 +58,13 @@ async function start(mode: 'full' | 'incremental' | 'reset' = 'full') {
   confirmReset.value = false
   remember(f)
   const r = await api.start(f, mode)
-  if (!r.ok) return
+  if (!r.ok) {
+    // 没选评分模式：直接带去设置页，而不是弹一句看不懂的报错
+    if ((r as any).need_mode) { needMode.value = true; return }
+    if (r.error) emit('toast', r.error)
+    return
+  }
+  needMode.value = false
   scanning.value = true
   t0.value = Date.now()
   timer = setInterval(poll, 700)
@@ -147,7 +164,7 @@ const etaText = () => {
         你只复核「分差小」的组，落选片随时复查召回
       </p>
       <div style="display: flex; gap: 10px; justify-content: center">
-        <input v-model="folder" type="text" style="width: 440px"
+        <input v-model="folder" type="text" :class="{ shake }" style="width: 440px"
                placeholder="照片文件夹绝对路径，如 C:\Users\you\Pictures\xx" list="dirs" />
         <datalist id="dirs"><option v-for="d in recent" :key="d" :value="d" /></datalist>
         <button class="act" :disabled="scanning || !backendReady" @click="start('full')"
@@ -159,6 +176,16 @@ const etaText = () => {
           {{ confirmReset ? '确认重新整理' : '重新整理' }}
         </button>
         <button v-if="confirmReset" class="ghost" @click="confirmReset = false">取消</button>
+      </div>
+      <div v-if="needMode" class="hintbar" style="text-align:left;border-color:var(--acc)">
+        <b>还没有选择评分模式</b>
+        <div style="margin-top:6px;font-size:12px;color:var(--dim)">
+          请先到设置里选择「审美优先」或「画质优先」，选完才能开始整理。
+        </div>
+        <button class="act" style="margin-top:10px;padding:4px 14px;font-size:12px"
+                @click="needMode = false; emit('go', 'settings')">
+          去设置选择
+        </button>
       </div>
       <div v-if="confirmReset" class="hintbar" style="text-align:left;border-color:var(--warn)">
         将删除该目录的扫描结果、缩略图缓存与全部<b>人工标记</b>，然后从零重新扫描。

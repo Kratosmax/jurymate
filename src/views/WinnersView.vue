@@ -9,6 +9,11 @@ const emit = defineEmits<{ changed: []; toast: [m: string] }>()
 
 const winners = computed(() => (props.state?.photos ?? []).filter((p) => p.status === 'winner'))
 const lightbox = ref('')
+// 分项标签跟着评分模式走：画质优先没有独立的「清晰」分
+const scoreMode = computed<'aesthetic' | 'quality' | ''>(() => {
+  const m = props.state?.score_mode
+  return m === 'quality' ? 'quality' : m === 'aesthetic' ? 'aesthetic' : ''
+})
 
 // 归档/导出的结果放在页面里常驻显示。
 // 原来只发一条 2.6 秒的 toast——它会被紧接着的 emit('changed') 重新渲染冲掉，
@@ -205,7 +210,6 @@ onBeforeUnmount(() => {
     <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px">
       <h2 class="pgtitle" style="flex: 1; margin: 0">
         胜出 {{ winners.length }} 张
-        <span style="color: var(--dim); font-size: 12px; font-weight: 400">★ = 5 分制审美参考分（悬停看含义）</span>
       </h2>
       <button class="ghost" :disabled="!!busy" @click="exportCsv">
         {{ busy === 'csv' ? '导出中…' : '导出 CSV 清单' }}
@@ -245,7 +249,10 @@ onBeforeUnmount(() => {
                  :class="{ cardsel: i === activeIdx }"
                  :style="{ animationDelay: Math.min(i * 0.03, 0.5) + 's' }"
                  :badge="p.manual_winner ? '手动' : ''"
-                 :note="'MUSIQ 无参考审美模型的 5 分制映射（人类平均审美参考分，AI 拿它排序）'"
+                 :mode="scoreMode"
+                 :note="scoreMode === 'quality'
+                   ? '画质分来自 MUSIQ（无参考画质模型），已含清晰度要素'
+                   : '审美分来自 NIMA（人类平均审美），综合分再按权重叠加清晰度'"
                  @click="lightbox = p.thumb_view" @contextmenu="onContextMenu($event, p)">
         <template #footer>
           <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px">

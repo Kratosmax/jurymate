@@ -213,7 +213,7 @@ onMounted(() => {
       <WinnersView v-show="page === 'winners'" :state="S" @changed="refresh" @toast="toast" />
       <ReviewView v-show="page === 'review'" :state="S" @changed="refresh" @toast="toast" />
       <SettingsView v-show="page === 'settings'" @toast="toast" @netsaved="invalidateProxy"
-                    :updater="updaterApi" />
+                    @refresh="refresh" :updater="updaterApi" />
     </div>
   </div>
   <transition name="toast">

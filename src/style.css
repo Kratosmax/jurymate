@@ -198,3 +198,91 @@ button.danger:hover { filter: brightness(1.1); }
   margin-right: 6px;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---- 评分模型 / 权重滑块 ---- */
+.mets {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--dim);
+}
+.modes { display: flex; gap: 10px; margin-bottom: 12px; }
+.modecard {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid #3a3f47;
+  background: #22262c;
+  color: var(--txt);
+  cursor: pointer;
+  transition: border-color .18s ease, background .18s ease, transform .18s cubic-bezier(.34,1.4,.64,1);
+}
+.modecard:hover { transform: translateY(-1px); }
+.modecard.on { border-color: var(--acc); background: rgba(91,157,255,.10); }
+.modecard b { font-size: 14px; }
+.modecard span { font-size: 12px; color: var(--dim); }
+.modecard em { font-size: 11px; color: var(--dim); font-style: normal; }
+.modelrow { display: flex; align-items: center; gap: 10px; }
+
+.slider-wrap { padding: 4px 2px 0; }
+/* 滑杆动画：填充色随位置在「清晰蓝 → 审美紫」之间过渡，
+   拇指拖动时放大并发光，松手回弹。--hue 由组件按权重算出来。 */
+.wslider {
+  -webkit-appearance: none;
+  width: 100%;
+  height: 8px;
+  border-radius: 4px;
+  outline: none;
+  cursor: pointer;
+  background: linear-gradient(90deg,
+    hsl(var(--hue, 218) 90% 62%) var(--fill, 50%),
+    #3a3f47 var(--fill, 50%));
+  transition: background .45s cubic-bezier(.34, 1.4, .64, 1);
+}
+.wslider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #fff, hsl(var(--hue, 218) 90% 72%));
+  border: 3px solid hsl(var(--hue, 218) 90% 62%);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .4);
+  transition: transform .22s cubic-bezier(.34, 1.56, .64, 1),
+              box-shadow .22s ease;
+}
+.wslider:hover::-webkit-slider-thumb { transform: scale(1.12); }
+.wslider:active::-webkit-slider-thumb {
+  transform: scale(1.35);
+  box-shadow: 0 0 0 8px hsl(var(--hue, 218) 90% 62% / .18),
+              0 2px 14px hsl(var(--hue, 218) 90% 55% / .7);
+}
+.slider-labels {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--dim);
+}
+.slider-labels .mid { color: var(--txt); opacity: .75; }
+.slider-labels b { color: var(--acc); }
+
+/* 目录为空时输入框左右晃两下，比只弹一句提示更容易被注意到 */
+@keyframes shake-x {
+  0%, 100% { transform: translateX(0); }
+  15% { transform: translateX(-7px); }
+  30% { transform: translateX(6px); }
+  45% { transform: translateX(-5px); }
+  60% { transform: translateX(4px); }
+  75% { transform: translateX(-2px); }
+}
+.shake {
+  animation: shake-x .6s cubic-bezier(.36, .07, .19, .97) both;
+  border-color: var(--bad) !important;
+}
+
+/* ---- 卡片评分明细 ---- */
+.card .mets { color: var(--dim); }

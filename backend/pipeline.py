@@ -35,9 +35,10 @@ RAW_EXTS = {".arw", ".cr2", ".cr3", ".nef", ".raf", ".orf", ".rw2", ".dng", ".er
 
 HARD_REASONS = frozenset(("失焦", "闭眼", "过曝", "欠曝"))
 
+# 100 分制（原 5 分制数值 ×20）
 PENALTY = {
-    "失焦": 2.5, "闭眼": 2.0, "过曝": 0.8, "欠曝": 0.8,
-    "偏软": 0.3, "低分": 1.5,
+    "失焦": 50.0, "闭眼": 40.0, "过曝": 16.0, "欠曝": 16.0,
+    "偏软": 6.0, "低分": 30.0,
 }
 
 
@@ -110,10 +111,40 @@ def classify(photo: dict, settings: dict) -> list[str]:
         reasons.append("欠曝")
     return reasons
 
-def composite_score(photo: dict, aesthetic_score: float | None, reasons: list[str]) -> float:
-    """综合分 = 审美分 - 淘汰原因惩罚。审美缺失时以 3.0 中性起步。"""
-    s = aesthetic_score if aesthetic_score is not None else 3.0
-    return round(max(0.0, s - sum(PENALTY.get(r, 0.0) for r in reasons)), 2)
+def _sharp_to100(sharpness) -> float:
+    """拉普拉斯方差 -> 0-100。
+
+    用对数映射而不是线性：方差随画面内容呈数量级变化（干净背景 100 上下，
+    树叶/招牌能到 900+），线性会把大部分照片压到个位数。
+    经验锚点：30（硬淘汰线）-> 0 分，900 -> 100 分。
+    """
+    import math
+    v = float(sharpness or 0.0)
+    if v <= 0:
+        return 0.0
+    lo, hi = math.log10(30.0), math.log10(900.0)
+    x = (math.log10(v) - lo) / (hi - lo)
+    return max(0.0, min(100.0, x * 100.0))
+
+
+def composite_score(photo: dict, aesthetic_score: float | None, reasons: list[str],
+                    settings: dict | None = None) -> float:
+    """综合分（整数）。
+
+    - 审美优先：按设置页滑杆的权重混合「审美分」与「清晰分」，权重来自
+      score_weight（0-100），默认 100:100 即 1:1。
+    - 画质优先：MUSIQ 分本身就包含清晰度要素，不再叠加清晰分。
+    两种模式都要再减掉淘汰原因的惩罚。评分缺失时以 60 分中性起步。
+    """
+    settings = settings or {}
+    base = 60.0 if aesthetic_score is None else float(aesthetic_score)
+    mode = settings.get("score_mode") or "aesthetic"
+    if mode == "quality":
+        raw = base
+    else:
+        w = float(settings.get("score_weight", 50)) / 100.0
+        raw = w * base + (1.0 - w) * _sharp_to100(photo.get("sharpness"))
+    return float(max(0.0, round(raw - sum(PENALTY.get(r, 0.0) for r in reasons))))
 
 
 # ---------------------------------------------------------------- 共享阶段
@@ -293,8 +324,8 @@ def decide_group(members: list[int], photos: list[dict], settings: dict,
 
     members 是 photos 的局部索引（增量场景传 new_photos，id_offset 把
     winner/members 换算回全局索引）。"""
-    pk_gap = float(settings.get("pk_gap", 0.35))
-    min_score = float(settings.get("min_score", 2.0))
+    pk_gap = float(settings.get("pk_gap", 7.0))
+    min_score = float(settings.get("min_score", 40.0))
     for i in members:
         ph = photos[i]
         ph["group_id"] = gid
@@ -305,7 +336,9 @@ def decide_group(members: list[int], photos: list[dict], settings: dict,
         if aes is not None and aes < min_score \
                 and "低分" not in ph["reject_reasons"]:
             ph["reject_reasons"].append("低分")
-            ph["score"] = composite_score(ph, aes, ph["reject_reasons"])
+        ph["sharp_score"] = round(_sharp_to100(ph.get("sharpness")))
+        # 权重只作用于"审美 vs 清晰"的分配，淘汰惩罚仍然直接扣在总分上
+        ph["score"] = composite_score(ph, aes, ph["reject_reasons"], settings)
     ranked = sorted(members, key=lambda i: -photos[i].get("score", 0.0))
     winner = ranked[0]
     gap = (photos[ranked[0]].get("score", 0.0) - photos[ranked[1]].get("score", 0.0)) \
@@ -337,11 +370,37 @@ def decide(photos: list[dict], settings: dict) -> list[dict]:
     """全量决策：逐图定原因/综合分；逐组定默认胜者与是否需要人 PK。"""
     for ph in photos:
         ph["reject_reasons"] = classify(ph, settings)
-        ph["score"] = composite_score(ph, ph.get("aesthetic"), ph["reject_reasons"])
+        ph["score"] = composite_score(ph, ph.get("aesthetic"), ph["reject_reasons"], settings)
     groups_out = []
     for gid, members in enumerate(group_mod.group(photos, settings)):
         groups_out.append(decide_group(members, photos, settings, gid))
     return groups_out
+
+
+def rescore(photos: list[dict], groups: list[dict], settings: dict) -> None:
+    """只重算综合分与组内排序，不重新推理、不动淘汰原因与人工决策。
+
+    改权重时用它：几毫秒就能把全库分数刷一遍。
+    换评分模式不能只靠它——那需要先用新模型重新评分（见 /api/rescore）。
+    """
+    for ph in photos:
+        ph["sharp_score"] = round(_sharp_to100(ph.get("sharpness")))
+        ph["score"] = composite_score(ph, ph.get("aesthetic"),
+                                      ph.get("reject_reasons") or [], settings)
+    pk_gap = float(settings.get("pk_gap", 7.0))
+    for g in groups:
+        members = [i for i in g.get("members", []) if 0 <= i < len(photos)]
+        if not members:
+            continue
+        ranked = sorted(members, key=lambda i: -photos[i].get("score", 0.0))
+        # 人工召回的图是"持久胜出"，重算不能把它顶掉
+        manual = [i for i in members if photos[i].get("manual_winner")]
+        g["winner"] = manual[0] if manual else ranked[0]
+        g["gap"] = round((photos[ranked[0]].get("score", 0.0)
+                          - photos[ranked[1]].get("score", 0.0))
+                         if len(ranked) > 1 else 99.0, 2)
+        g["needs_pk"] = len(members) > 1 and g["gap"] < pk_gap
+
 
 def run(folder: str, state_dir: Path, settings: dict, progress=None) -> dict:
     photos = scan_folder(folder, state_dir / "thumbs", settings, progress)
@@ -374,7 +433,7 @@ def add_new_photos(folder: str, photos: list[dict], groups: list[dict],
     score_candidates(new_photos, state_dir, settings, None)
     for ph in new_photos:
         ph["reject_reasons"] = classify(ph, settings)
-        ph["score"] = composite_score(ph, ph.get("aesthetic"), ph["reject_reasons"])
+        ph["score"] = composite_score(ph, ph.get("aesthetic"), ph["reject_reasons"], settings)
     offset = len(photos)
     for gi, members in enumerate(group_mod.group(new_photos, settings)):
         groups.append(decide_group(members, new_photos, settings,
