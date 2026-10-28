@@ -1,6 +1,6 @@
 [package]
 name = "jurymate"
-version = "0.2.1"
+version = "0.3.0"
 description = "JuryMate — AI 选片搭档：AI 陪审，你是法官"
 authors = ["Kratosmax"]
 edition = "2024"

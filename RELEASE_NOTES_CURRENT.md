@@ -1,4 +1,4 @@
-# JuryMate 0.2.1
+# JuryMate 0.3.0
 
 ## 新增：两种评分模式，自己选
 
@@ -106,8 +106,8 @@ insightface 的 `landmark_3d_68` 模块在 DirectML 上会抛 `AttributeError: '
 
 | 文件 | 适用 |
 |---|---|
-| `JuryMate_0.2.1_x64-setup.exe` | 大多数用户 |
-| `JuryMate_0.2.1_x64.zip` | 免安装便携版 |
+| `JuryMate_0.3.0_x64-setup.exe` | 大多数用户 |
+| `JuryMate_0.3.0_x64.zip` | 免安装便携版 |
 
 ## 已知限制
 
