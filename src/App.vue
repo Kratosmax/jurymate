@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { api } from './api'
+import { cardsIn, pageEnter } from './motion'
 import { check, type Update } from '@tauri-apps/plugin-updater'
 import { relaunch } from '@tauri-apps/plugin-process'
 import { invoke } from '@tauri-apps/api/core'
@@ -169,17 +170,13 @@ function go(p: Page) {
   // 之前用 requestAnimationFrame，那是下一帧绘制之后才跑——用户会先看到
   // 新页面完整出现，再被动画拉回 opacity:0 重放一次，表现为"闪一下/抖一下"。
   nextTick(() => {
-    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return
     const el = Array.from(
       document.querySelectorAll<HTMLElement>('.view-host .view'),
     ).find((e) => e.offsetParent !== null)
-    el?.animate(
-      [
-        { opacity: 0, transform: 'translateY(8px)' },
-        { opacity: 1, transform: 'none' },
-      ],
-      { duration: 260, easing: 'cubic-bezier(.16, 1, .3, 1)' },
-    )
+    if (!el) return
+    pageEnter(el)
+    // 卡片也要重放：CSS 只在挂载时跑一次，v-show 的页面会错过
+    cardsIn(el)
   })
 }
 
