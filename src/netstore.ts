@@ -33,9 +33,14 @@ export function loadNetCfg(): NetCfg {
     const v = JSON.parse(raw)
     return {
       use_mirror: v.use_mirror === true,
-      github_mirrors: Array.isArray(v.github_mirrors)
-        ? v.github_mirrors.filter((m: unknown) => typeof m === 'string' && m.trim())
-        : [...DEFAULT_NET.github_mirrors],
+      github_mirrors: (() => {
+        const arr = Array.isArray(v.github_mirrors)
+          ? v.github_mirrors.filter((m: unknown) => typeof m === 'string' && m.trim())
+          : []
+        // 空列表 + 已启用镜像 = 用内置默认线路，否则用户开了开关却一条线路都没有
+        return arr.length ? arr : [...DEFAULT_NET.github_mirrors]
+      })(),
+      // 空列表 + 已启用镜像 = 用内置默认线路，否则用户开了开关却一条线路都没有
       http_proxy: typeof v.http_proxy === 'string' ? v.http_proxy : '',
       order: v.order === 'direct_first' ? 'direct_first' : 'mirror_first',
     }

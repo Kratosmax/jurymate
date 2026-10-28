@@ -2,7 +2,7 @@ use std::net::TcpStream;
 use std::process::{Child, Command};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 const BACKEND_PORT: u16 = 5090;
 
@@ -328,7 +328,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .invoke_handler(tauri::generate_handler![greet, backend_port, backend_status, set_debug, prepare_update, reveal_in_explorer])
+        .invoke_handler(tauri::generate_handler![greet, backend_port, backend_status, set_debug, prepare_update, reveal_in_explorer, updater_check, updater_install])
         .setup(|app| {
             let handle = app.handle().clone();
             let _ = APP_HANDLE.set(handle.clone());
@@ -359,4 +359,100 @@ pub fn run() {
                 kill_backend_by_name();
             }
         });
+}
+
+// ============================================================
+// 更新器（镜像优先）
+// ============================================================
+// 为什么不用 tauri-plugin-updater 的 JS check()：它的 endpoint 是编译期写死的
+// github.com，运行时无法替换；而被墙的用户只有镜像线路能用。这里用
+// `updater_builder().endpoints(...)` 在运行时注入候选线路，取清单、下载、
+// 校验、安装全部由同一个 Updater 完成，签名与哈希校验沿用插件实现。
+use tauri_plugin_updater::UpdaterExt;
+
+#[derive(serde::Serialize)]
+pub struct UpdateInfo {
+    pub available: bool,
+    pub current_version: String,
+    pub version: Option<String>,
+    pub notes: Option<String>,
+}
+
+fn build_updater(
+    app: &tauri::AppHandle,
+    endpoints: &[String],
+    proxy: Option<&str>,
+) -> Result<tauri_plugin_updater::Updater, String> {
+    let urls: Vec<tauri::Url> = endpoints
+        .iter()
+        .map(|e| e.trim())
+        .filter(|e| !e.is_empty())
+        .filter_map(|e| tauri::Url::parse(e).ok())
+        .collect();
+    if urls.is_empty() {
+        return Err("没有可用的更新线路（请在网络设置里启用镜像或保留直连）".into());
+    }
+    let mut b = app.updater_builder().endpoints(urls).map_err(|e| e.to_string())?;
+    if let Some(p) = proxy.map(str::trim).filter(|p| !p.is_empty()) {
+        let u = tauri::Url::parse(p).map_err(|e| format!("代理地址不合法：{e}"))?;
+        b = b.proxy(u);
+    }
+    b.build().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn updater_check(
+    app: tauri::AppHandle,
+    endpoints: Vec<String>,
+    proxy: Option<String>,
+) -> Result<UpdateInfo, String> {
+    let updater = build_updater(&app, &endpoints, proxy.as_deref())?;
+    let current = updater
+        .check()
+        .await
+        .map_err(|e| e.to_string())?;
+    match current {
+        Some(u) => Ok(UpdateInfo {
+            available: true,
+            current_version: u.current_version.clone(),
+            version: Some(u.version.clone()),
+            notes: u.body.clone(),
+        }),
+        None => Ok(UpdateInfo {
+            available: false,
+            current_version: app.package_info().version.to_string(),
+            version: None,
+            notes: None,
+        }),
+    }
+}
+
+#[tauri::command]
+async fn updater_install(
+    app: tauri::AppHandle,
+    endpoints: Vec<String>,
+    proxy: Option<String>,
+) -> Result<(), String> {
+    let updater = build_updater(&app, &endpoints, proxy.as_deref())?;
+    let update = updater
+        .check()
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "已是最新版本".to_string())?;
+    let handle = app.clone();
+    let mut last_emit = std::time::Instant::now();
+    update
+        .download_and_install(
+            move |chunk, total| {
+                // 每 200ms 发一次，避免大包把 IPC 打满
+                if last_emit.elapsed() >= Duration::from_millis(200) {
+                    last_emit = std::time::Instant::now();
+                    let _ = handle.emit("updater://progress", (chunk, total));
+                }
+            },
+            || {},
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }

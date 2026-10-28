@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { api } from './api'
 import { cardsIn, pageEnter } from './motion'
 import { loadNetCfg, updateCandidates } from './netstore'
-import { check, type Update } from '@tauri-apps/plugin-updater'
+import { listen } from '@tauri-apps/api/event'
 import { relaunch } from '@tauri-apps/plugin-process'
 import { invoke } from '@tauri-apps/api/core'
 
@@ -43,84 +43,31 @@ const updaterApi = reactive({
   doUpdate: () => doUpdate(),
 })
 
-// 更新器默认只认系统代理，不认应用内「网络设置」的代理——用户明明配了代理、
-// 模型能下，检查更新却失败。这里把同一份设置显式传给更新器。
-// 未配置时传 undefined，行为退回系统代理/直连，不改变原有默认。
-// 直接从本地配置读：后端没起来时更新检查也要能用用户刚填的代理。
-let cachedProxy: string | null | undefined
-async function updaterProxy(): Promise<string | undefined> {
-  if (cachedProxy !== undefined) return cachedProxy ?? undefined
-  const local = loadNetCfg()
-  cachedProxy = local.http_proxy.trim() || null
-  return cachedProxy ?? undefined
-}
-/** 网络设置变更后清掉缓存，让下次检查更新用新代理。 */
-function invalidateProxy() { cachedProxy = undefined }
-
-
-// 直连更新器失败时，用「镜像前缀 → 直连」的候选线路自己取一次清单。
-// 注意：这条路径只用于**发现新版本**并给出镜像下载地址；Tauri 的原地升级
-// 仍然走它自己的直连通道（插件不支持运行时改 endpoint）。镜像线路对
-// GitHub 被墙的用户是唯一能用的线路，所以至少要让"有没有新版本"能查到。
-function cmpVer(a: string, b: string): number {
-  const pa = a.split('.').map(Number)
-  const pb = b.split('.').map(Number)
-  for (let i = 0; i < 3; i++) {
-    const d = (pa[i] ?? 0) - (pb[i] ?? 0)
-    if (d) return d
-  }
-  return 0
-}
-async function checkViaMirror(): Promise<{ version: string; notes: string; url: string } | null> {
-  for (const url of updateCandidates(loadNetCfg())) {
-    try {
-      const r = await fetch(url, { cache: 'no-store' })
-      if (!r.ok) continue
-      const j = await r.json()
-      if (j?.version && cmpVer(String(j.version), APP_VERSION) > 0) {
-        return {
-          version: String(j.version),
-          notes: j.notes ?? '',
-          url: j?.platforms?.['windows-x86_64']?.url ?? '',
-        }
-      }
-    } catch { /* 这条线路不通，试下一条 */ }
-  }
-  return null
-}
-
 // 检查更新的结果放进常驻状态（定义见文件上方 updCheck）
 async function checkUpdate(silent: boolean) {
   if (!silent) { updChecking.value = true; updCheck.value = null }
   try {
     if (!(window as any).__TAURI_INTERNALS__) return   // 浏览器模式无更新器
-    const proxy = await updaterProxy()
-    const u: Update | null = await check({ proxy })
-    if (u) {
-      updateInfo.value = { version: u.version, body: u.body ?? '' }
-      updCheck.value = { kind: 'ok', text: `发现新版本 v${u.version}` }
+    const cfg = loadNetCfg()
+    const endpoints = updateCandidates(cfg)
+    const proxy = cfg.http_proxy.trim() || null
+    const info = await invoke<{
+      available: boolean; current_version: string
+      version: string | null; notes: string | null
+    }>('updater_check', { endpoints, proxy })
+    if (info.available && info.version) {
+      updateInfo.value = { version: info.version, body: info.notes ?? '' }
+      updCheck.value = { kind: 'ok', text: `发现新版本 v${info.version}` }
     } else {
       updCheck.value = { kind: 'none', text: `已是最新版本（v${APP_VERSION}）` }
     }
   } catch (e) {
-    // 直连失败：换镜像线路再查一次
-    const m = await checkViaMirror()
-    if (m) {
-      updateInfo.value = { version: m.version, body: m.notes }
-      updCheck.value = {
-        kind: 'ok',
-        text: `发现新版本 v${m.version}（镜像线路）`,
-        detail: m.url ? `镜像下载地址：${m.url}` : '',
-      }
-      return
-    }
-    const via = await updaterProxy()
+    const cfg = loadNetCfg()
+    const lines = updateCandidates(cfg).length
     updCheck.value = {
       kind: 'err',
       text: '检查更新失败',
-      // 把"用没用代理"写出来：系统代理关着又没填代理时，直连 GitHub
-      // 必然超时，这时候说"网络受限"比只说"失败"有用得多。
-      detail: `${e}`.slice(0, 120) + (via ? `（已用代理 ${via}）` : '（未配置代理，走系统代理/直连）'),
+      detail: `${e}`.slice(0, 140) + `（已尝试 ${lines} 条线路${cfg.http_proxy ? '，含代理' : ''}）`,
     }
   } finally {
     if (!silent) updChecking.value = false
@@ -131,28 +78,32 @@ async function doUpdate() {
   updating.value = true
   updStage.value = '检查更新'
   updGot.value = 0; updTotal.value = 0
+  let un: (() => void) | undefined
   try {
-    const proxy = await updaterProxy()
-    console.info('[jurymate] 更新器使用代理(下载):', proxy ?? '(系统代理/直连)')
-    const u: Update | null = await check({ proxy })
-    if (!u) return
+    const cfg = loadNetCfg()
+    const endpoints = updateCandidates(cfg)
+    const proxy = cfg.http_proxy.trim() || null
     // 关键：安装器起来时应用还活着、sidecar 也还活着，会锁住
     // dist-backend/*.exe 导致安装卡在"文件被占用"。必须在下载安装前
     // 主动停掉后端并等文件真正释放（RunEvent::Exit 的清理来得太晚）。
     updStage.value = '准备安装'
     await invoke<string>('prepare_update').catch(() => 'skip')
-    updStage.value = '下载中'
-    await u.downloadAndInstall((ev) => {
-      if (ev.event === 'Started') {
-        updTotal.value = ev.data.contentLength ?? 0
+    un = await listen<[number, number] | { got: number; total: number | null }>(
+      'updater://progress',
+      (ev) => {
+        const p: any = ev.payload
+        if (Array.isArray(p)) {
+          updGot.value = p[0]
+          if (p[1]) updTotal.value = p[1]
+        } else {
+          updGot.value = p.got
+          if (p.total) updTotal.value = p.total
+        }
         updStage.value = '下载中'
-      } else if (ev.event === 'Progress') {
-        updGot.value += ev.data.chunkLength
-      } else if (ev.event === 'Finished') {
-        updStage.value = '校验并安装'
-        updGot.value = updTotal.value || updGot.value   // 校验通过才视为 100%
-      }
-    })
+      },
+    )
+    updStage.value = '下载中'
+    await invoke('updater_install', { endpoints, proxy })
     updStage.value = '重启中'
     await relaunch()
   } catch (e) {
@@ -162,6 +113,7 @@ async function doUpdate() {
     toast(`${phase}失败，现有安装未被修改（可能需要管理员权限）。可重试，或到 Releases 手动下载。`)
     console.error('[jurymate] 更新失败:', e)
   } finally {
+    un?.()
     updating.value = false
   }
 }
@@ -278,7 +230,7 @@ onMounted(() => {
       <DecideView v-show="page === 'pk'" :state="S" @done="refresh" @toast="toast" />
       <WinnersView v-show="page === 'winners'" :state="S" @changed="refresh" @toast="toast" />
       <ReviewView v-show="page === 'review'" :state="S" @changed="refresh" @toast="toast" />
-      <SettingsView v-show="page === 'settings'" @toast="toast" @netsaved="invalidateProxy"
+      <SettingsView v-show="page === 'settings'" @toast="toast" @netsaved="() => {}"
                     @refresh="refresh" :updater="updaterApi" />
     </div>
   </div>
