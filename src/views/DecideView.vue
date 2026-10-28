@@ -1,5 +1,5 @@
-<script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+﻿<script setup lang="ts">
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api, type Group, type State } from '../api'
 
 const props = defineProps<{ state: State | null }>()
@@ -21,6 +21,22 @@ const mode = ref<'pk' | 'single'>(saved === 'single' ? 'single' : 'pk')
 const takenIds = ref<Set<number>>(new Set())
 
 const group = computed(() => queue.value[pos.value] ?? null)
+
+// ---- 判定动效 ----
+// 胜出：金色脉冲 + 「✓ 胜出」徽章弹入；落选：褪色下坠 + 「✕ 落选」印章。
+// 只是视觉反馈，不改任何判定逻辑；播放期间锁住按键，避免连点连播。
+const fx = ref<'' | 'win' | 'reject'>('')
+const fxBusy = ref(false)
+async function playFx(kind: 'win' | 'reject') {
+  if (fxBusy.value) return
+  fxBusy.value = true
+  fx.value = ''
+  await nextTick()
+  fx.value = kind
+  await new Promise((r) => setTimeout(r, kind === 'win' ? 520 : 460))
+  fx.value = ''
+  fxBusy.value = false
+}
 
 /** 组内按综合分从高到低排：用户希望"最左边就是最高分那张"。
  *  PK 和单图两种模式都用这份顺序，保证 ←→ 走的就是分数顺序。 */
@@ -106,6 +122,7 @@ async function pick(i: number) {
   const g = group.value
   const m = sorted.value[i]
   if (!g || !m) return
+  await playFx('win')
   await api.pk(g.id, 'pick', m.idx)
   takenIds.value = new Set()
   emit('done')
@@ -124,6 +141,7 @@ async function setOne(idx: number, status: 'winner' | 'reject') {
 async function pickCurrent() {
   const c = cur.value
   if (!c) return
+  await playFx('win')
   await setOne(c.idx, 'winner')
   const next = new Set(takenIds.value)
   next.add(c.idx)
@@ -146,6 +164,7 @@ async function pickCurrent() {
 
 /** 单图模式：↓ —— 结束本组，剩余全部进复查 */
 async function endGroupRejectRest() {
+  await playFx('reject')
   for (const m of pool.value) await setOne(m.idx, 'reject')
   takenIds.value = new Set()
   emit('done')
@@ -164,6 +183,7 @@ async function act(a: 'all' | 'none') {
   const g = group.value
   const m = sorted.value[sel.value]
   if (!g || !m) return
+  await playFx(a === 'all' ? 'win' : 'reject')
   await api.pk(g.id, a, m.idx)
   emit('done')
   pos.value++
@@ -240,7 +260,7 @@ async function onKey(e: KeyboardEvent) {
       </div>
 
       <!-- 并排 PK -->
-      <div v-if="mode === 'pk'" id="pkStage">
+      <div v-if="mode === 'pk'" id="pkStage" :class="'fx-' + fx">
         <div v-for="(m, i) in sorted" :key="m.idx" class="side" :class="{ selL: i === sel }">
           <span v-if="i === aiIdx" class="aid" title="AI 默认选择">AI 首选</span>
           <img :src="m.thumb_view" title="点击 1:1 放大" @click="toggleZoom" />
@@ -253,11 +273,15 @@ async function onKey(e: KeyboardEvent) {
             </span>
           </div>
         </div>
+        <div v-if="fx" class="fx-layer">
+          <div v-if="fx === 'win'" class="fx-ring" />
+          <div class="fx-badge" :class="fx">{{ fx === 'win' ? '✓ 胜出' : '✕ 落选' }}</div>
+        </div>
       </div>
 
       <!-- 单张大图 -->
       <div v-else class="singlewrap">
-        <div class="singlestage" v-if="cur">
+        <div class="singlestage" v-if="cur" :class="'fx-' + fx">
           <img :src="cur.thumb_view" title="点击 1:1 放大" @click="toggleZoom" />
           <div class="singlecap">
             <div class="capline">
@@ -270,6 +294,10 @@ async function onKey(e: KeyboardEvent) {
               <em class="plain">锐度 {{ Math.round(cur.sharpness) }}</em>
               <em class="plain">{{ cur.width }}×{{ cur.height }}</em>
             </div>
+          </div>
+          <div v-if="fx" class="fx-layer">
+            <div v-if="fx === 'win'" class="fx-ring" />
+            <div class="fx-badge" :class="fx">{{ fx === 'win' ? '✓ 胜出' : '✕ 落选' }}</div>
           </div>
         </div>
         <div v-else class="empty">本组已全部处理</div>
@@ -356,4 +384,57 @@ async function onKey(e: KeyboardEvent) {
 }
 
 .keys { text-align: center; color: var(--dim); font-size: 12px; margin-top: 14px; }
+
+/* ---- 判定动效：胜出 / 落选 ---- */
+#pkStage { position: relative; }
+.fx-layer {
+  position: absolute; inset: 0; z-index: 6;
+  display: flex; align-items: center; justify-content: center;
+  pointer-events: none;
+}
+.fx-ring {
+  position: absolute; width: 120px; height: 120px; border-radius: 50%;
+  border: 3px solid rgba(255, 210, 90, .95);
+  box-shadow: 0 0 44px rgba(255, 200, 70, .55), inset 0 0 30px rgba(255, 210, 90, .35);
+  animation: fx-ring .62s cubic-bezier(.16, 1, .3, 1) forwards;
+}
+@keyframes fx-ring {
+  0%   { transform: scale(.25); opacity: .95; }
+  70%  { opacity: .55; }
+  100% { transform: scale(3.4); opacity: 0; }
+}
+.fx-badge {
+  font-size: 30px; font-weight: 800; letter-spacing: 2px;
+  padding: 10px 26px; border-radius: 14px;
+  animation: fx-badge .52s cubic-bezier(.34, 1.56, .64, 1) both;
+}
+.fx-badge.win {
+  color: #1a1200; background: linear-gradient(135deg, #ffd76a, #ffb01f);
+  box-shadow: 0 8px 30px rgba(255, 180, 20, .5);
+}
+.fx-badge.reject {
+  color: #fff; background: linear-gradient(135deg, #ff6b6b, #c62828);
+  box-shadow: 0 8px 30px rgba(220, 40, 40, .45);
+}
+@keyframes fx-badge {
+  0%   { transform: scale(.4) rotate(-8deg); opacity: 0; }
+  60%  { transform: scale(1.12) rotate(-2deg); opacity: 1; }
+  100% { transform: scale(1) rotate(-4deg); opacity: 1; }
+}
+/* 胜出：画面轻放大 + 提亮 */
+.singlestage.fx-win img, #pkStage.fx-win img { animation: fx-win .5s var(--ease-spring); }
+@keyframes fx-win {
+  0%   { transform: scale(1); filter: brightness(1); }
+  45%  { transform: scale(1.015); filter: brightness(1.12); }
+  100% { transform: scale(1); filter: brightness(1); }
+}
+/* 落选：褪色 + 下坠 + 轻微倾斜 */
+.singlestage.fx-reject img, #pkStage.fx-reject img {
+  animation: fx-reject .46s cubic-bezier(.4, 0, 1, 1) forwards;
+}
+@keyframes fx-reject {
+  0%   { transform: translateY(0) rotate(0); filter: grayscale(0) brightness(1); opacity: 1; }
+  25%  { transform: translateY(2px) rotate(-.6deg); }
+  100% { transform: translateY(26px) rotate(1.2deg); filter: grayscale(1) brightness(.55); opacity: .15; }
+}
 </style>
