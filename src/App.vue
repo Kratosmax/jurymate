@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { api } from './api'
 import { cardsIn, pageEnter } from './motion'
-import { loadNetCfg, updateCandidates } from './netstore'
+import { loadNetCfg, updateCandidates, updateLines } from './netstore'
 import { listen } from '@tauri-apps/api/event'
 import { relaunch } from '@tauri-apps/plugin-process'
 import { invoke } from '@tauri-apps/api/core'
@@ -81,7 +81,9 @@ async function doUpdate() {
   let un: (() => void) | undefined
   try {
     const cfg = loadNetCfg()
-    const endpoints = updateCandidates(cfg)
+    const lines = updateLines(cfg)
+    const endpoints = lines.map((l) => l.url)
+    const prefixes = lines.map((l) => l.prefix)
     const proxy = cfg.http_proxy.trim() || null
     // 关键：安装器起来时应用还活着、sidecar 也还活着，会锁住
     // dist-backend/*.exe 导致安装卡在"文件被占用"。必须在下载安装前
@@ -103,7 +105,7 @@ async function doUpdate() {
       },
     )
     updStage.value = '下载中'
-    await invoke('updater_install', { endpoints, proxy })
+    await invoke('updater_install', { endpoints, prefixes, proxy })
     updStage.value = '重启中'
     await relaunch()
   } catch (e) {

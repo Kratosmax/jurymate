@@ -431,28 +431,80 @@ async fn updater_check(
 async fn updater_install(
     app: tauri::AppHandle,
     endpoints: Vec<String>,
+    prefixes: Vec<String>,
     proxy: Option<String>,
 ) -> Result<(), String> {
+    // 先用插件 check 一次：拿到带签名的 Update（签名在清单里，对应安装包字节）
     let updater = build_updater(&app, &endpoints, proxy.as_deref())?;
     let update = updater
         .check()
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "已是最新版本".to_string())?;
-    let handle = app.clone();
-    let mut last_emit = std::time::Instant::now();
-    update
-        .download_and_install(
-            move |chunk, total| {
-                // 每 200ms 发一次，避免大包把 IPC 打满
-                if last_emit.elapsed() >= Duration::from_millis(200) {
-                    last_emit = std::time::Instant::now();
-                    let _ = handle.emit("updater://progress", (chunk, total));
+
+    // 再用自己的 HTTP 客户端按同一批线路取清单，目的是拿到原始下载地址，
+    // 并按「命中的那条线路」改写成镜像地址 —— 插件做不到这点，它只照清单里
+    // 的 github.com 地址下载，被墙时就是 0 字节卡死。
+    // 注意：不能设 client 级别的 timeout()，那是对整个请求计时——472MB 在慢镜像上
+    // 必然超过 120 秒会被中断（实测断在 2%）。这里只限制建连与单次读取的空闲。
+    let mut cb = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(20))
+        .read_timeout(Duration::from_secs(60));
+    if let Some(p) = proxy.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+        cb = cb.proxy(reqwest::Proxy::all(p).map_err(|e| format!("代理地址不合法：{e}"))?);
+    }
+    let client = cb.build().map_err(|e| e.to_string())?;
+
+    let mut last_err = String::new();
+    let mut picked: Option<(String, serde_json::Value)> = None;
+    for (i, ep) in endpoints.iter().enumerate() {
+        match client.get(ep).send().await {
+            Ok(r) if r.status().is_success() => match r.json::<serde_json::Value>().await {
+                Ok(v) => {
+                    picked = Some((prefixes.get(i).cloned().unwrap_or_default(), v));
+                    break;
                 }
+                Err(e) => last_err = format!("{ep}: {e}"),
             },
-            || {},
-        )
+            Ok(r) => last_err = format!("{ep}: HTTP {}", r.status()),
+            Err(e) => last_err = format!("{ep}: {e}"),
+        }
+    }
+    let (prefix, manifest) =
+        picked.ok_or_else(|| format!("所有线路都无法获取清单：{last_err}"))?;
+    let original = manifest["platforms"]["windows-x86_64"]["url"]
+        .as_str()
+        .ok_or_else(|| "清单缺少 windows-x86_64 下载地址".to_string())?
+        .to_string();
+    let dl = if prefix.is_empty() {
+        original
+    } else {
+        format!("{}/{}", prefix.trim_end_matches('/'), original)
+    };
+
+    let mut resp = client
+        .get(&dl)
+        .send()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("下载失败：{e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("下载失败：HTTP {}", resp.status()));
+    }
+    let total = resp.content_length();
+    let mut buf: Vec<u8> = Vec::with_capacity(total.unwrap_or(0) as usize);
+    let mut last = std::time::Instant::now();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| format!("下载中断：{e}"))? {
+        buf.extend_from_slice(&chunk);
+        if last.elapsed() >= Duration::from_millis(200) {
+            last = std::time::Instant::now();
+            let _ = app.emit("updater://progress", (buf.len(), total));
+        }
+    }
+    let _ = app.emit("updater://progress", (buf.len(), total));
+
+    // install 内部会再验一次签名（minisign + 公钥），不通过绝不执行安装器
+    update
+        .install(&buf)
+        .map_err(|e| format!("校验或安装失败：{e}"))?;
     Ok(())
 }

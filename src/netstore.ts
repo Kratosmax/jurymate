@@ -1,13 +1,9 @@
 /**
  * 网络设置的本地存储（localStorage）。
  *
- * 为什么要本地一份：网络设置同时服务两件事——
- *   1) 后端模型下载器（需要后端进程活着）
- *   2) 前端更新检查（后端没起来时也要能用）
- * 之前整套配置只存在后端，应用刚启动、sidecar 还在解压 1.1GB 的那 60~90 秒里，
- * 用户在设置页改镜像根本存不进去，只能干等。
- *
- * 现在：localStorage 是前端的第一事实源，改完立刻生效；后端起来后再同步一份。
+ * 网络设置同时服务两件事：后端模型下载器（要后端活着）与前端更新检查。
+ * 应用刚启动、sidecar 还在解压的那 60~90 秒里，配置必须已经可读可改，
+ * 所以 localStorage 是前端的第一事实源，后端起来后再同步一份。
  */
 
 export interface NetCfg {
@@ -17,7 +13,15 @@ export interface NetCfg {
   order: 'mirror_first' | 'direct_first'
 }
 
+export interface UpdateLine {
+  /** 清单地址（镜像前缀已拼好） */
+  url: string
+  /** 线路前缀；直连为空串 */
+  prefix: string
+}
+
 const KEY = 'jurymate.net'
+const DIRECT = 'https://github.com/Kratosmax/jurymate/releases/latest/download/latest.json'
 
 export const DEFAULT_NET: NetCfg = {
   use_mirror: false,
@@ -31,16 +35,13 @@ export function loadNetCfg(): NetCfg {
     const raw = localStorage.getItem(KEY)
     if (!raw) return { ...DEFAULT_NET }
     const v = JSON.parse(raw)
+    const list = Array.isArray(v.github_mirrors)
+      ? v.github_mirrors.filter((m: unknown) => typeof m === 'string' && m.trim())
+      : []
     return {
       use_mirror: v.use_mirror === true,
-      github_mirrors: (() => {
-        const arr = Array.isArray(v.github_mirrors)
-          ? v.github_mirrors.filter((m: unknown) => typeof m === 'string' && m.trim())
-          : []
-        // 空列表 + 已启用镜像 = 用内置默认线路，否则用户开了开关却一条线路都没有
-        return arr.length ? arr : [...DEFAULT_NET.github_mirrors]
-      })(),
       // 空列表 + 已启用镜像 = 用内置默认线路，否则用户开了开关却一条线路都没有
+      github_mirrors: list.length ? list : [...DEFAULT_NET.github_mirrors],
       http_proxy: typeof v.http_proxy === 'string' ? v.http_proxy : '',
       order: v.order === 'direct_first' ? 'direct_first' : 'mirror_first',
     }
@@ -70,23 +71,23 @@ export function normalizeMirrors(list: string[]): string[] {
   return out
 }
 
-/**
- * 生成更新清单的候选 URL（镜像优先 / 直连优先）。
- *
- * 规则与后端模型下载器一致：只对 GitHub 域加前缀，前缀 = base + "/" + 原始绝对 URL。
- * 最后一定带一条直连兜底，除非用户把直连也关掉（这里不做，保持可更新优先）。
- */
-export function updateCandidates(cfg: NetCfg): string[] {
-  const direct = 'https://github.com/Kratosmax/jurymate/releases/latest/download/latest.json'
-  const out: string[] = []
+/** 更新线路：镜像优先/直连优先，直连永远兜底 */
+export function updateLines(cfg: NetCfg): UpdateLine[] {
+  const out: UpdateLine[] = []
   if (cfg.use_mirror) {
     const mirrors = normalizeMirrors(cfg.github_mirrors)
-    const mk = (m: string) => `${m}/${direct}`
+    const mk = (m: string): UpdateLine => ({ url: `${m}/${DIRECT}`, prefix: m })
     if (cfg.order === 'mirror_first') out.push(...mirrors.map(mk))
-    out.push(direct)
+    out.push({ url: DIRECT, prefix: '' })
     if (cfg.order === 'direct_first') out.push(...mirrors.map(mk))
   } else {
-    out.push(direct)
+    out.push({ url: DIRECT, prefix: '' })
   }
-  return [...new Set(out)]
+  const seen = new Set<string>()
+  return out.filter((l) => (seen.has(l.url) ? false : (seen.add(l.url), true)))
+}
+
+/** 只要 URL 列表（界面显示用） */
+export function updateCandidates(cfg: NetCfg): string[] {
+  return updateLines(cfg).map((l) => l.url)
 }
