@@ -86,57 +86,39 @@ CPU 永远兜底。首选 EP 没装时自动降级（N 卡只装了 DML 包仍�
 `models.detect()` 只转述 `hardware` 的结论，不再自己判断——避免出现
 "界面提示推荐 X、实际跑 Y"的分裂。
 
-## 2. 当前快照（最后核验 2026-10-27 16:xx）
+## 2. 当前快照（最后核验 2026-10-29 12:30）
 
-- 版本：**0.1.8**（版本源 `src-tauri/tauri.conf.json`；`package.json`、
-  `Cargo.toml`、`Cargo.lock` 必须同步，CI 会校验与标签一致）
-- 分支：master；remote：`origin` → https://github.com/Kratosmax/jurymate
-- 仓库：**PUBLIC**，标签已到 `v0.1.8`
-- 发布资产：**5 项**（setup.exe / .sig / zip / latest.json / SHA256SUMS.txt）
-  —— 0.1.8 起不再发 MSI
-- **自动更新已端到端验证通过**（0.1.3 → 0.1.4 真机升级）。
-  0.1.0–0.1.4 升级会卡在文件占用，**必须手动安装 0.1.5+ 一次**
-- **存储位置全面可自定义**：模型、缓存、日志、临时解压、程序设置全部跟随数据根；
-  换目录自动迁移数据；`_MEI*` 不落系统盘
-- **安装/卸载界面为简体中文**（0.1.8 起）
-- **待用户**：提供 2-3 张正面人像含闭眼样本（闭眼阈值真数据校准）
-### 发布方式
+- 本地版本：**0.3.2**（`tauri.conf.json` / `package.json` / `Cargo.toml` 一致）
+- 已发布版本：**v0.3.2**（GitHub Release，5 个资产）
+- 分支 master，**有 7 个提交未推送**（见 §9），工作区干净
+- **注意版本撞车**：本地 0.3.2 含「网络设置重做/持久化/onedir/色彩」等修复，
+  线上 v0.3.2 不含。下一次发版用 **0.3.3**。
 
-- 标签触发：推送 `v*` 标签 → `.github/workflows/release.yml` 自动构建并发布
-- 版本三处一致（tauri.conf.json / package.json / Cargo.toml）+ 标签一致，
-  任一不符 CI 直接失败
-- 签名私钥在 GitHub Secret `TAURI_SIGNING_PRIVATE_KEY`（本地副本在 `.keys/`，
-  已 gitignore）。**私钥不入库、不入日志、不入产物**
-- 资产矩阵：Full Setup（NSIS）+ Full ZIP（便携）。**不提供 Lite**：
-  后端是 Python sidecar（Flask + insightface + pyiqa + MediaPipe），依赖约
-  2GB 且需 Python 3.11，无法形成有意义的轻量包——此结论已写入 README 与
-  Release Notes，不是静默省略
-- 自动更新清单 `latest.json` 只收 NSIS 安装包（Tauri 只给它签名；手工压的
-  ZIP 无 `.sig`，写进清单会导致客户端验签失败）
+### 本轮（2026-10-29）已完成
+
+| 项 | 结果 | 证据 |
+|---|---|---|
+| sidecar `--onefile` → `--onedir` | 冷启动 **60~90s → 7.7s** | 装包后实测两次 |
+| 安装包 | **494 MB → 337 MB** | 构建产物 |
+| 色彩整形（A 方案） | **11~19 ms/张** | `backend/grade.py`，缩略图与分析共用 |
+| NIMA → ONNX | 124/124 张，最大 Δ = **0.0000** | `temp/onnx_spike_notes.md` |
+| MUSIQ → ONNX | 124/124 张，Δ ≤ **0.0001** | 同上 |
+| ONNX 推理接线 | 两模式整数分数与 torch **差 0** | `backend/onnx_score.py` + `aesthetic.py` |
 
 ### 仓库体积约束
 
-历史曾误提交 457MB 的 sidecar exe（`5bff22e`、`13f2dff`），`.git` 一度达
-2.9GB。已用 `filter-branch` 清除并 gc，现 `.git` 约 0.4MB。
-**`dist-backend/`、`build-backend/`、`temp/` 永远不得入库**（已在 .gitignore）。
+历史曾误提交 457MB sidecar（`5bff22e`、`13f2dff`），`.git` 一度 2.9GB，
+已用 `filter-branch` 清除。**`dist-backend/`、`build-backend/`、`temp/` 不入库**。
+本地 `src-tauri/target` 约 21GB，在 F 盘，勿删（删了要重编 15 分钟）。
 
 ## 3. 当前待办
 
-1. 【待用户】正面人像含闭眼样本 → EAR 阈值真数据校准
-2. debug 后端（`jury-backend-debug.exe`）未随包分发。已评估后放弃：
-   双 exe 会让安装包从 457MB 翻倍到约 914MB，对个人使用不划算；
-   需要看后端输出的人直接用源码跑 `backend/app.py` 即可
-3. P1：胜出清单联动 LightCraft 调色（CSV 已有，缺导入自动化）；
-   recall_stats 阈值自校准；千张并行（信号/评分多进程）
-4. P2：EXIF 相机水印；ArcFace 同人归组
+1. **【下一步·必做】按 `docs/ONNX_MIGRATION.md` 完成 ONNX 分发与打包**：
+   上传 3 个 `.onnx` 资产 → `models.py` 加下载条目 → PyInstaller 排除
+   `torch/torchvision/pyiqa` → 打包 → 扫 124 张验收。四步必须一次做完。
+2. 双包更新（界面包 ~15MB / 引擎包 ~150MB 分离）——ONNX 完成后再做。
+3. 【待用户】正面人像含闭眼样本 → EAR 阈值校准（用户未确认重视此项，优先级低）。
 
-已解决（不再跟进）：
-- ~~自动更新卡在文件占用~~ → 0.1.5 的 `prepare_update` 解决
-- ~~更新器不读应用内代理~~ → 0.1.3 解决
-- ~~模型库绕过 preflight 自行下载~~ → `a82dc06` 解决
-- ~~`_MEI*` 占满系统盘~~ → 0.1.6 把 TEMP 重定向到数据目录解决
-
-没有其他已授权未完成事项；上述之外等待用户需求，不自行扩大范围。
 ## 4. 关键入口
 
 | 职责 | 文件 |
@@ -242,65 +224,52 @@ C:\Users\11726\AppData\Local\Temp = "F:\git\jurymate\temp"; C:\Users\11726\AppDa
 - 与 Git/源码/用户指示冲突时，以更新的可验证证据为准并修正本文件
 
 
-## 9. 会话交接（2026-10-27 16:xx）
+## 9. 会话交接（2026-10-29 12:30）
 
-### 更新器时序（这条最值钱，别再踩）
-
-自动更新卡在文件占用，根因是**执行顺序**：
+### 未推送的提交（7 个，master）
 
 ```
-updater.downloadAndInstall()
-  1. on_before_exit 钩子
-  2. 启动安装器 (spawn)      <-- 此刻应用还活着，sidecar 也活着
-  3. 应用退出 RunEvent::Exit  <-- 清理挂在这里已经太晚
+2253e15 docs: ONNX 迁移交接文档
+261946f feat(score): aesthetic 接入 ONNX 分支（有模型走 ONNX，否则回退 torch）
+6ea564e feat(score): 新增 ONNX 推理后端（未接线）
+f89d92a perf(packaging): sidecar 改 onedir，冷启动 60~90s -> 7.7s；新增色彩整形
+c58e9a3 fix(settings): 评分模式/权重改为应用级持久化
+8f842a7 feat(settings): 网络设置重做，保存即生效并当场可见
+11f52ec build: npm/pip 缓存改道到项目 temp，构建不再写 C 盘
 ```
 
-证据：`tauri-plugin-updater-2.14.0/src/updater.rs` 第 1017–1019 行
-先调 `on_before_exit()` 再 spawn 安装器。
+### 下一会话从这里开始
 
-所以清理必须由前端在 `downloadAndInstall` **之前**主动触发
-（0.1.5 的 `prepare_update` 命令）。
+1. 先跑 §1 的接手校准命令
+2. 读 `docs/ONNX_MIGRATION.md`（含可复现的导出脚本）
+3. 读 `temp/onnx_spike_notes.md`（全部实测数据与踩坑记录，注意 temp 不入库但本机还在）
+4. 按 `docs/ONNX_MIGRATION.md` 的「剩余步骤 1→4」一次做完
 
-### 已完成版本
+### 现成的 ONNX 产物（本机，未入库）
 
-| 版本 | 内容 |
+| 文件 | 路径 |
 |---|---|
-| v0.1.1 | 更新进度、版本号显示、前后端版本一致性检查、首页崩溃修复 |
-| v0.1.2 | 退出时清理 sidecar（时机错，未真正解决） |
-| v0.1.3 | 更新检查接入应用内代理；修复代理缓存污染 |
-| v0.1.4 | 消除启动控制台黑窗；修 `JURYMATE_DEBUG` 失效 |
-| v0.1.5 | **prepare_update：自动更新真正跑通** |
-| v0.1.6 | **存储位置全面可自定义**；`_MEI*` 不再占系统盘 |
-| v0.1.7 | 程序设置文件也跟随数据目录 |
-| v0.1.8 | **设置独立成页**；系统目录选择器；**换目录自动迁移**；中文安装界面；停发 MSI |
+| NIMA 299 | `F:\git\jurymate\temp\nima299.onnx`（207MB） |
+| MUSIQ 横 | `F:\git\jurymate\temp\musiq_1024x683.onnx`（104MB） |
+| MUSIQ 竖 | `F:\git\jurymate\temp\musiq_683x1024.onnx`（104MB） |
+| 已就位副本 | `D:\AppData\JuryMate\onnx\{nima,musiq_land,musiq_port}.onnx` |
 
-### 存储位置的四个关键点
+> 注意：`temp/` 有多个中间产物（nima1/nima224/nima_clean/musiq），
+> 只有上表三个是最终版；其余是失败或早期试验，可删。
 
-1. **优先级**：`JURYMATE_DATA_DIR` > `paths.json` 的 `data_root` > 默认。
-   配置文件本身固定在默认位置，不跟着搬——否则改完就找不到它了。
-2. **Rust 也要解析**：`lib.rs` 的 `data_root()` 用同样优先序，在 spawn
-   sidecar 时注入 `TEMP`。PyInstaller 在启动瞬间就解压，只有父进程提前
-   设好环境变量才能改变落点。
-3. **换目录必须迁移**：只改配置不搬数据，用户看到新目录空、旧目录仍占几百 MB，
-   界面上又不再提旧路径——等于把文件藏起来。`tmp` 不迁（每次重建），
-   日志被占用时改为复制。
-4. **缩略图例外**：`<照片目录>/.jurymate/thumbs` 刻意不跟随数据根。
-   缩略图与照片一一对应，搬移照片时缓存一起走，不留孤儿文件。
+### 踩过的坑（不要再犯）
 
-### 踩过的坑（务必先读）
+1. **NIMA 输入是 299×299，不是 224** —— 按 224 导出会让分数差到 1.3
+2. **NIMA 内部 resize 用双线性** —— 用 LANCZOS 会差 0.498；`onnx_score.py` 已用 BILINEAR
+3. **pyiqa 的 `center_crop` 追踪时会崩**（对 Tensor 调 round）——导出期把 resize/center_crop 换成恒等
+4. **MUSIQ 的 `resize_preserve_aspect_ratio` 同样问题** —— 把 h/w 先 int() 再 round
+5. **MUSIQ 是变长输入** —— 已按实际素材导出横竖两版（1024×683 / 683×1024），非 3:2 的图会被拉伸
+6. **`--onedir` 后安装目录多一层** `dist-backend/jury-backend/jury-backend.exe`
+7. **PowerShell 5.1 的 `-Encoding UTF8` 写文件带 BOM**，会让 package.json/JSON 解析失败；必须用 `UTF8Encoding($false)`
 
-1. **`npm run tauri build` 不会重建 sidecar**，且 PyInstaller 见到产物存在会
-   跳过。本会话因此在 UI 上白测了一轮迁移（跑的是旧 exe）。**改后端后必须
-   手动跑 PyInstaller**，且先 `Remove-Item dist-backend\jury-backend.exe`。
-2. **后端 onefile 冷启动实测 20 秒以上**。任何在挂载时发请求的页面都要等
-   `waitBackend()`，否则首屏全是空值。
-3. **改 Rust 后忘了 `import sys` 会让后端起不来**，我曾误判成
-   "`--windowed` 不兼容"。排查时先直接跑 `python backend/app.py` 看 Traceback。
-4. **`%TEMP%\_MEI*` 会吃光 C 盘**（实测 27 个 / 27.45GB）。开发时用
-   `scripts/dev-build.ps1`（见 §6.5）。
-5. **Tauri 窗口标题改不动 `document.title`**，前端调试信息写进页面可见区域。
-6. **UIA 点击坐标用 `get_app_state(mode='text')` 的 rect**，截图是缩放后的。
+### 用户偏好与边界（重要）
 
-### 剩余待办
-
-见 §3。只剩 EAR 阈值校准（需用户提供样本）与 P1/P2 功能项。
+- 改代码前先给 why + before/after，同意后再改（用户明确要求过）
+- 用户不接受的：没证据下结论、把没验证的东西说成"已验证"
+- 用户对「闭眼检测」**没有**表达过重视（此前我误称"用户重视闭眼"，已更正）
+- 发版必须用户明确同意；本次用户选择「不发」，只记录进度
