@@ -202,6 +202,10 @@ jobs:
           Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zip -CompressionLevel Optimal -Force
           Remove-Item "$zip.sig" -Force -ErrorAction SilentlyContinue
           $key = $env:TAURI_SIGNING_PRIVATE_KEY
+          if ($key) {
+            $key = $key.Trim()
+            $key = $key.TrimStart([char]92)
+          }
           try {
             Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY -ErrorAction SilentlyContinue
             npx tauri signer sign --app-version $ver --private-key $key $zip
