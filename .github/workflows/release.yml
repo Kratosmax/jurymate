@@ -187,8 +187,8 @@ jobs:
       - name: Build engine package
         shell: pwsh
         env:
-          TAURI_SIGNING_PRIVATE_KEY: \${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: \${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           $pkg = Get-Content package.json -Raw | ConvertFrom-Json
           $ver = if ($pkg.engineVersion) { [string]$pkg.engineVersion } else { [string]$pkg.version }
@@ -350,10 +350,10 @@ jobs:
 
       # 引擎走独立 engine 通道：UI Release 更新不会重复上传 180MB 引擎。
       - name: Publish engine channel
-        if: \${{ github.event_name == 'push' || inputs.dry_run == false }}
+        if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
         shell: pwsh
         env:
-          GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           $tag = "engine"
           $assets = @(Get-ChildItem out -File |
@@ -372,7 +372,7 @@ jobs:
         if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           gh release view "$GITHUB_REF_NAME" --json assets \
             --jq '.assets[] | "\(.name)\t\(.size)"'
