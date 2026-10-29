@@ -6,7 +6,7 @@
 **默认不选模式**（_mode 为空）：没选之前不加载、不下载任何评分模型，
 由设置页让用户显式二选一。
 
-两种模型权重都由 paths.py 钉在 <数据目录>/torch/hub/pyiqa，由设置页按所选模式下载。
+评分优先走 <数据目录>/onnx 下的 ONNX 模型；torch 权重仅作为源码环境的回退路径。
 """
 import logging
 
@@ -27,7 +27,7 @@ MODES = {
         "id": "musiq",
         "file": "musiq_koniq_ckpt-e95806b9.pth",
         "label": "画质优先",
-        "size_mb": 104,
+        "size_mb": 208,
     },
 }
 
@@ -91,7 +91,8 @@ def reset_cache() -> None:
 
 
 def is_loaded() -> bool:
-    return _predictor is not None
+    """torch 预测器已加载，或当前模式所需 ONNX 文件已就绪。"""
+    return _predictor is not None or bool(_onnx_models(_mode))
 
 
 def _get():
@@ -144,10 +145,11 @@ def _onnx_models(mode: str):
     d = _onnx_dir()
     if mode == "aesthetic":
         p = d / "nima.onnx"
-        return {"nima": p} if p.exists() else None
+        return {"nima": p} if p.is_file() and p.stat().st_size > 0 else None
     if mode == "quality":
         a, b = d / "musiq_land.onnx", d / "musiq_port.onnx"
-        return {"land": a, "port": b} if a.exists() and b.exists() else None
+        ok = lambda x: x.is_file() and x.stat().st_size > 0
+        return {"land": a, "port": b} if ok(a) and ok(b) else None
     return None
 
 

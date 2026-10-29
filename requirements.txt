@@ -11,9 +11,11 @@ scipy>=1.11
 opencv-contrib-python>=4.9
 onnxruntime-directml>=1.16   # AMD/Intel 显卡 DirectML 加速
 insightface>=0.7
-pyiqa>=0.1.10                # MUSIQ 审美分（torch CPU）
-timm>=0.9
 mediapipe<0.11
+
+# 注意：应用运行时走 ONNX，不再需要 torch/torchvision/pyiqa/timm。
+# 只有「重新导出 ONNX 模型」的开发环境才装（见 docs/ONNX_MIGRATION.md）：
+#   pip install torch torchvision pyiqa timm
 
 # 装完若 opencv-python / onnxruntime(CPU) 被 insightface 带入，需纠正：
 #   pip uninstall -y opencv-python onnxruntime

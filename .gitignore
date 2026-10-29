@@ -33,3 +33,5 @@ dist-backend/
 
 # 本地构建产物与预览包
 temp/
+
+dist-engine/

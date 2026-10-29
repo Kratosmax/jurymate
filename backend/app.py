@@ -263,6 +263,20 @@ def index():
                         "hint": "前端由 Tauri 提供；浏览器模式请用源码运行"})
     return send_from_directory(app.static_folder, "index.html")
 
+def _score_model_installed(mode: str) -> bool:
+    """评分模型是否可用：优先看 ONNX；源码环境允许旧 torch 权重回退。"""
+    try:
+        if aesthetic._onnx_models(mode):
+            return True
+    except Exception:
+        pass
+    meta = aesthetic.MODES.get(mode)
+    if not meta:
+        return False
+    w = paths.torch_dir() / "hub" / "pyiqa" / meta["file"]
+    return w.is_file() and w.stat().st_size >= 1024
+
+
 def preflight_models():
     """扫描前的模型可用性检查：缺失就抛 ModelUnavailable，别等跑到一半才炸。
 
@@ -275,11 +289,13 @@ def preflight_models():
         raise errors.ModelUnavailable(
             "评分模型（未选择）", "还没有选择评分模式",
             "请在「设置 → 评分模型」里选择「审美优先」或「画质优先」")
-    need_score_id = "nima" if mode == "aesthetic" else "musiq"
-    # 只要求"当前评分模式"对应的那一个评分模型，不能因为另一个没下载就拦下扫描
+    # 只要求当前评分模式对应的评分模型，不能因为另一个没下载就拦下扫描
     required = [m for m in models_mod.models()
-                if m["id"] in ("face_landmarker", "buffalo_l", need_score_id)]
+                if m["id"] in ("face_landmarker", "buffalo_l")]
     missing = [m for m in required if not models_mod._installed(m)]
+    if not _score_model_installed(mode):
+        meta = aesthetic.MODES.get(mode, {})
+        missing.append({"name": f"{meta.get('label', mode)}评分模型"})
     if missing:
         names = "、".join(m["name"] for m in missing[:2])
         if len(missing) > 2:
@@ -1083,7 +1099,9 @@ def paths_progress():
 # 数据根下的子目录：(键, 中文名)。tmp 是进程临时区，不参与迁移。
 _DATA_SUBDIRS = (
     ("logs", "日志"),
-    ("torch", "审美模型缓存"),
+    ("engine", "引擎（独立安装包）"),
+    ("onnx", "ONNX 评分模型"),
+    ("torch", "torch 权重缓存（旧版回退用）"),
     ("insightface", "人脸模型"),
     ("tmp", "临时解压"),
 )
@@ -1265,8 +1283,8 @@ def thumbs(p):
 def _preload_aesthetic() -> None:
     """后台预加载当前评分模式的模型。
 
-    MUSIQ 首次创建要读 104MB 权重 + 初始化 torch，实测 20 秒以上。原来是在
-    扫描推进到评分阶段才惰性加载，用户看到的就是进度条卡在"加载审美模型"
+    ONNX 模型首次创建推理会话要读 200MB 左右权重，MUSIQ 还要初始化两个会话。
+    原来是在扫描推进到评分阶段才惰性加载，用户看到的就是进度条卡在"加载审美模型"
     很久不动。后端一启动就预热，扫描跑到评分时模型已在内存里。
 
     没选模式时**什么都不做**：默认不选是产品决定，不能偷偷替用户加载/下载。
@@ -1280,9 +1298,15 @@ def _preload_aesthetic() -> None:
         # 这里必须自己导入，否则报 name 'aesthetic' is not defined。
         import aesthetic as _aesthetic
         _aesthetic.set_mode(mode)
+        PRELOAD["model_error"] = ""
+        # 打包版不带 torch：ONNX 文件齐了就直接标记就绪，不能再去 import pyiqa/torch
+        if _aesthetic._onnx_models(mode):
+            PRELOAD["model_ready"] = True
+            log.info("审美模型预加载完成（ONNX，无需 torch）")
+            return
         _aesthetic._get()
         PRELOAD["model_ready"] = True
-        log.info("审美模型预加载完成")
+        log.info("审美模型预加载完成（torch 回退）")
     except Exception as e:
         PRELOAD["model_error"] = str(e)
         log.info("审美模型预加载跳过（稍后按需加载）：%s", e)
@@ -1296,7 +1320,7 @@ if __name__ == "__main__":
     ap.add_argument("--port", type=int, default=5090)
     ap.add_argument("--no-browser", action="store_true")
     # --doctor：不启服务，只验证打包是否完整，退出码非 0 即失败。
-    # 为什么要它：函数内延迟导入的模块（mediapipe.tasks、torchvision._C）
+    # 为什么要它：函数内延迟导入的模块（mediapipe.tasks、onnx_score）
     # PyInstaller 静态分析看不到，源码环境跑一万遍也发现不了漏收；
     # 而读 PyInstaller 的 warn-*.txt 做文本匹配又必然被一堆无害的可选缺失
     # （fcntl/wandb/albumentations…）干扰。真正可靠的做法是让产物自己
@@ -1329,9 +1353,8 @@ if __name__ == "__main__":
             ("insightface.app", "人脸检测"),
             ("cv2", "图像读写"),
             ("numpy", "数值"),
-            ("torch", "审美评分"),
-            ("torchvision", "审美评分"),
-            ("pyiqa", "审美评分"),
+            ("onnxruntime", "ONNX 推理"),
+            ("onnx_score", "ONNX 评分后端"),
             ("rawpy", "RAW 解码"),
             ("PIL", "图像"),
             ("flask", "服务"),
@@ -1344,18 +1367,6 @@ if __name__ == "__main__":
             except Exception as e:
                 failed.append((mod, purpose, e))
                 say(f"[FAIL] {mod:32s} {purpose}  -> {e}")
-        # torchvision 的 C++ 扩展是单独 load_library 的，import 成功不代表
-        # nms 算子可用（0.1.9 就是这样漏过检查的），必须实调一次。
-        try:
-            import torch
-            import torchvision  # noqa: F401
-            _ = torch.ops.torchvision.nms(
-                torch.tensor([[0., 0., 10., 10.]]),
-                torch.tensor([0.9]), 0.5)
-            say(f"[ OK ] {'torchvision::nms':32s} 检测框后处理")
-        except Exception as e:
-            failed.append(("torchvision::nms", "检测框后处理", e))
-            say(f"[FAIL] {'torchvision::nms':32s} 检测框后处理  -> {e}")
 
         if failed:
             say(f"\nDOCTOR FAILED: {len(failed)} 项不可用")

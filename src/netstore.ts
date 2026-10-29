@@ -22,6 +22,8 @@ export interface UpdateLine {
 
 const KEY = 'jurymate.net'
 const DIRECT = 'https://github.com/Kratosmax/jurymate/releases/latest/download/latest.json'
+// 引擎通道独立于应用 Release：UI 版本更新不会自动重新上传/重下 150MB 引擎。
+const ENGINE_DIRECT = 'https://github.com/Kratosmax/jurymate/releases/download/engine/engine.json'
 
 export const DEFAULT_NET: NetCfg = {
   use_mirror: false,
@@ -71,20 +73,29 @@ export function normalizeMirrors(list: string[]): string[] {
   return out
 }
 
-/** 更新线路：镜像优先/直连优先，直连永远兜底 */
-export function updateLines(cfg: NetCfg): UpdateLine[] {
+function linesFor(cfg: NetCfg, direct: string): UpdateLine[] {
   const out: UpdateLine[] = []
   if (cfg.use_mirror) {
     const mirrors = normalizeMirrors(cfg.github_mirrors)
-    const mk = (m: string): UpdateLine => ({ url: `${m}/${DIRECT}`, prefix: m })
+    const mk = (m: string): UpdateLine => ({ url: `${m}/${direct}`, prefix: m })
     if (cfg.order === 'mirror_first') out.push(...mirrors.map(mk))
-    out.push({ url: DIRECT, prefix: '' })
+    out.push({ url: direct, prefix: '' })
     if (cfg.order === 'direct_first') out.push(...mirrors.map(mk))
   } else {
-    out.push({ url: DIRECT, prefix: '' })
+    out.push({ url: direct, prefix: '' })
   }
   const seen = new Set<string>()
   return out.filter((l) => (seen.has(l.url) ? false : (seen.add(l.url), true)))
+}
+
+/** UI 更新线路：镜像优先/直连优先，直连永远兜底 */
+export function updateLines(cfg: NetCfg): UpdateLine[] {
+  return linesFor(cfg, DIRECT)
+}
+
+/** 引擎更新线路：同一套镜像/代理策略，但清单地址独立 */
+export function engineLines(cfg: NetCfg): UpdateLine[] {
+  return linesFor(cfg, ENGINE_DIRECT)
 }
 
 /** 只要 URL 列表（界面显示用） */

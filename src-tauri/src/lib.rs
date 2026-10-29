@@ -14,29 +14,61 @@ fn backend_alive() -> bool {
     TcpStream::connect(("127.0.0.1", BACKEND_PORT)).is_ok()
 }
 
-/// sidecar 定位：打包后 = 资源目录 dist-backend/jury-backend/jury-backend.exe（bundle.resources
-/// 随安装包分发）；开发模式 = 项目根 dist-backend/（PyInstaller 产物）或手动 Flask
-/// sidecar 选择：settings.json 的 debug=true → 带*控制台的 debug 版
+/// sidecar 选择：settings.json 的 debug=true → 带控制台的 debug 版
 /// （用户需求：正式版无控制台，debug 模式在设置里开启）；默认无控制台版。
-fn backend_exe(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
-    // debug 版只是可选的调试辅助：安装包里只保证正式版存在，
-    // 因此按 [debug, 正式] 的顺序找，debug 缺失时静默回退到正式版。
-    let names: &[&str] = if debug_enabled(app) {
+fn backend_names(app: &tauri::AppHandle) -> &'static [&'static str] {
+    if debug_enabled(app) {
         &["jury-backend-debug.exe", "jury-backend.exe"]
     } else {
         &["jury-backend.exe"]
-    };
-    if let Ok(d) = app.path().resource_dir() {
-        for name in names {
-            let p = d.join(format!("dist-backend/jury-backend/{}", name));
-            if p.exists() {
-                return Some(p);
-            }
+    }
+}
+
+/// 引擎目录：<数据根>/engine。UI 安装包不带 sidecar，引擎由 Rust 下载后放这里，
+/// 与安装目录解耦，UI 更新/卸载不会误删引擎。
+fn engine_root() -> std::path::PathBuf {
+    data_root().join("engine")
+}
+
+fn safe_engine_version(v: &str) -> bool {
+    !v.is_empty()
+        && v.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+}
+
+fn engine_current_version() -> Option<String> {
+    let s = std::fs::read_to_string(engine_root().join("current.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&s).ok()?;
+    v.get("version").and_then(|x| x.as_str()).map(str::to_string)
+}
+
+fn engine_exe() -> Option<std::path::PathBuf> {
+    let v = engine_current_version()?;
+    if !safe_engine_version(&v) {
+        return None;
+    }
+    for name in &["jury-backend.exe", "jury-backend-debug.exe"] {
+        let p = engine_root().join(&v).join("jury-backend").join(name);
+        if p.exists() {
+            return Some(p);
         }
     }
+    None
+}
+
+fn bundled_backend_exe(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    let names = backend_names(app);
+    let d = app.path().resource_dir().ok()?;
+    names
+        .iter()
+        .map(|name| d.join(format!("dist-backend/jury-backend/{}", name)))
+        .find(|p| p.exists())
+}
+
+fn dev_backend_exe(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    let names = backend_names(app);
+    let base = std::env::current_dir().ok()?;
     for name in names {
-        let found = std::env::current_dir()
-            .ok()?
+        let found = base
             .ancestors()
             .map(|d| d.join(format!("dist-backend/jury-backend/{}", name)))
             .find(|p| p.exists());
@@ -45,6 +77,55 @@ fn backend_exe(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
         }
     }
     None
+}
+
+fn backend_exe(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    // 优先数据目录里的独立引擎；旧版完整安装包/源码目录仍保留回退。
+    engine_exe()
+        .or_else(|| bundled_backend_exe(app))
+        .or_else(|| dev_backend_exe(app))
+}
+
+#[derive(serde::Serialize)]
+struct EngineStatus {
+    installed: bool,
+    version: Option<String>,
+    source: String,
+    path: Option<String>,
+}
+
+#[tauri::command]
+fn engine_status(app: tauri::AppHandle) -> EngineStatus {
+    if let Some(p) = engine_exe() {
+        return EngineStatus {
+            installed: true,
+            version: engine_current_version(),
+            source: "engine".into(),
+            path: Some(p.to_string_lossy().to_string()),
+        };
+    }
+    if let Some(p) = bundled_backend_exe(&app) {
+        return EngineStatus {
+            installed: true,
+            version: Some(app.package_info().version.to_string()),
+            source: "bundled".into(),
+            path: Some(p.to_string_lossy().to_string()),
+        };
+    }
+    if let Some(p) = dev_backend_exe(&app) {
+        return EngineStatus {
+            installed: true,
+            version: Some(app.package_info().version.to_string()),
+            source: "dev".into(),
+            path: Some(p.to_string_lossy().to_string()),
+        };
+    }
+    EngineStatus {
+        installed: false,
+        version: None,
+        source: "none".into(),
+        path: None,
+    }
 }
 
 /// 解析当前生效的数据根目录，与 backend/paths.py 的优先级保持一致：
@@ -115,7 +196,7 @@ fn spawn_backend(app: &tauri::AppHandle) -> Result<(), String> {
     }
     let Some(exe) = backend_exe(app) else {
         return Err(format!(
-            "未找到后端程序 dist-backend/jury-backend/jury-backend.exe。开发模式下请手动运行 backend/app.py（端口 {}）",
+            "未找到后端引擎。请在界面上下载引擎包，或开发模式下运行 backend/app.py（端口 {}）",
             BACKEND_PORT
         ));
     };
@@ -328,7 +409,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .invoke_handler(tauri::generate_handler![greet, backend_port, backend_status, set_debug, prepare_update, reveal_in_explorer, updater_check, updater_install])
+        .invoke_handler(tauri::generate_handler![greet, backend_port, backend_status, set_debug, prepare_update, reveal_in_explorer, engine_status, engine_check, engine_install, engine_start, updater_check, updater_install])
         .setup(|app| {
             let handle = app.handle().clone();
             let _ = APP_HANDLE.set(handle.clone());
@@ -398,6 +479,256 @@ fn build_updater(
         b = b.proxy(u);
     }
     b.build().map_err(|e| e.to_string())
+}
+
+
+fn build_engine_updater(
+    app: &tauri::AppHandle,
+    endpoints: &[String],
+    proxy: Option<&str>,
+) -> Result<tauri_plugin_updater::Updater, String> {
+    let urls: Vec<tauri::Url> = endpoints
+        .iter()
+        .map(|e| e.trim())
+        .filter(|e| !e.is_empty())
+        .filter_map(|e| tauri::Url::parse(e).ok())
+        .collect();
+    if urls.is_empty() {
+        return Err("没有可用的引擎更新线路（请在网络设置里启用镜像或保留直连）".into());
+    }
+    let mut b = app
+        .updater_builder()
+        .endpoints(urls)
+        .map_err(|e| e.to_string())?
+        // 引擎版本和 UI 版本独立：这里不按“必须比当前应用版本大”过滤，
+        // 由 engine_check/engine_install 自己比较引擎版本。
+        .version_comparator(|_current: semver::Version,
+                            _remote: tauri_plugin_updater::RemoteRelease| true);
+    if let Some(p) = proxy.map(str::trim).filter(|p| !p.is_empty()) {
+        let u = tauri::Url::parse(p).map_err(|e| format!("代理地址不合法：{e}"))?;
+        b = b.proxy(u);
+    }
+    b.build().map_err(|e| e.to_string())
+}
+
+#[derive(serde::Serialize)]
+struct EngineInfo {
+    available: bool,
+    version: Option<String>,
+    notes: Option<String>,
+    current_version: Option<String>,
+}
+
+#[tauri::command]
+async fn engine_check(
+    app: tauri::AppHandle,
+    endpoints: Vec<String>,
+    proxy: Option<String>,
+) -> Result<EngineInfo, String> {
+    let updater = build_engine_updater(&app, &endpoints, proxy.as_deref())?;
+    let current = engine_current_version();
+    match updater.check().await.map_err(|e| e.to_string())? {
+        Some(u) => Ok(EngineInfo {
+            available: current.as_deref() != Some(u.version.as_str()),
+            version: Some(u.version.clone()),
+            notes: u.body.clone(),
+            current_version: current,
+        }),
+        None => Ok(EngineInfo {
+            available: false,
+            version: None,
+            notes: None,
+            current_version: current,
+        }),
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(bytes);
+    hex::encode(h.finalize())
+}
+
+fn extract_engine_zip(bytes: &[u8], stage: &std::path::Path) -> Result<(), String> {
+    use std::io::Cursor;
+    let mut zip = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|e| format!("引擎包不是有效 ZIP：{e}"))?;
+    let mut total: u64 = 0;
+    for i in 0..zip.len() {
+        let mut f = zip
+            .by_index(i)
+            .map_err(|e| format!("读取引擎包条目失败：{e}"))?;
+        let Some(rel) = f.enclosed_name() else {
+            return Err("引擎包包含非法路径（路径穿越）".into());
+        };
+        let out = stage.join(rel);
+        if f.is_dir() {
+            std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+            continue;
+        }
+        total += f.size();
+        if total > 2 * 1024 * 1024 * 1024 {
+            return Err("引擎包解压后超过 2GB，已拒绝".into());
+        }
+        if let Some(parent) = out.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let mut writer = std::fs::File::create(&out).map_err(|e| e.to_string())?;
+        std::io::copy(&mut f, &mut writer).map_err(|e| e.to_string())?;
+    }
+    let entry = stage.join("jury-backend").join("jury-backend.exe");
+    if !entry.is_file() {
+        return Err("引擎包缺少 jury-backend/jury-backend.exe".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn engine_install(
+    app: tauri::AppHandle,
+    endpoints: Vec<String>,
+    prefixes: Vec<String>,
+    proxy: Option<String>,
+) -> Result<String, String> {
+    let updater = build_engine_updater(&app, &endpoints, proxy.as_deref())?;
+    let update = updater
+        .check()
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "没有可用的引擎更新".to_string())?;
+    let version = update.version.clone();
+    if !safe_engine_version(&version) {
+        return Err("引擎清单版本号不合法".into());
+    }
+    if engine_exe().is_some() {
+        if let Some(cur) = engine_current_version() {
+            if let (Ok(new), Ok(old)) = (
+                semver::Version::parse(&version),
+                semver::Version::parse(&cur),
+            ) {
+                if new <= old {
+                    return Err(format!("引擎版本未高于当前版本（{cur} -> {version}）"));
+                }
+            }
+        }
+    }
+
+    let mut cb = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(20))
+        .read_timeout(Duration::from_secs(60));
+    if let Some(p) = proxy.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+        cb = cb.proxy(reqwest::Proxy::all(p).map_err(|e| format!("代理地址不合法：{e}"))?);
+    }
+    let client = cb.build().map_err(|e| e.to_string())?;
+
+    let mut last_err = String::new();
+    let mut picked: Option<(String, serde_json::Value)> = None;
+    for (i, ep) in endpoints.iter().enumerate() {
+        match client.get(ep).send().await {
+            Ok(r) if r.status().is_success() => match r.json::<serde_json::Value>().await {
+                Ok(v) => {
+                    picked = Some((prefixes.get(i).cloned().unwrap_or_default(), v));
+                    break;
+                }
+                Err(e) => last_err = format!("{ep}: {e}"),
+            },
+            Ok(r) => last_err = format!("{ep}: HTTP {}", r.status()),
+            Err(e) => last_err = format!("{ep}: {e}"),
+        }
+    }
+    let (prefix, manifest) =
+        picked.ok_or_else(|| format!("所有线路都无法获取引擎清单：{last_err}"))?;
+    let platform = manifest
+        .get("platforms")
+        .and_then(|v| v.get("windows-x86_64"))
+        .ok_or_else(|| "引擎清单缺少 windows-x86_64 平台".to_string())?;
+    let original = platform
+        .get("url")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "引擎清单缺少下载地址".to_string())?
+        .to_string();
+    let dl = if prefix.is_empty() {
+        original
+    } else {
+        format!("{}/{}", prefix.trim_end_matches('/'), original)
+    };
+
+    let mut resp = client
+        .get(&dl)
+        .send()
+        .await
+        .map_err(|e| format!("引擎下载失败：{e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("引擎下载失败：HTTP {}", resp.status()));
+    }
+    let total = resp.content_length();
+    let mut buf: Vec<u8> = Vec::with_capacity(total.unwrap_or(0) as usize);
+    let mut last = std::time::Instant::now();
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| format!("引擎下载中断：{e}"))?
+    {
+        buf.extend_from_slice(&chunk);
+        if buf.len() > 600 * 1024 * 1024 {
+            return Err("引擎包超过 600MB，已拒绝".into());
+        }
+        if last.elapsed() >= Duration::from_millis(200) {
+            last = std::time::Instant::now();
+            let _ = app.emit("engine://progress", (buf.len(), total));
+        }
+    }
+    let _ = app.emit("engine://progress", (buf.len(), total));
+
+    if let Some(expected) = platform.get("sha256").and_then(|v| v.as_str()) {
+        if !expected.is_empty() && sha256_hex(&buf) != expected.to_ascii_lowercase() {
+            return Err("引擎包 SHA256 校验失败".into());
+        }
+    }
+    update
+        .verify(&buf)
+        .map_err(|e| format!("引擎包签名校验失败：{e}"))?;
+
+    let root = engine_root();
+    std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+    let stage = root.join(format!(".staging-{}", std::process::id()));
+    if stage.exists() {
+        std::fs::remove_dir_all(&stage).map_err(|e| e.to_string())?;
+    }
+    extract_engine_zip(&buf, &stage)?;
+
+    // 切换前先停掉旧引擎，避免文件被占用；失败时 current.json 保持旧版本。
+    kill_backend();
+    kill_backend_by_name();
+    let target = root.join(&version);
+    let backup = root.join(format!(".old-{}", version));
+    if backup.exists() {
+        std::fs::remove_dir_all(&backup).map_err(|e| e.to_string())?;
+    }
+    if target.exists() {
+        std::fs::rename(&target, &backup).map_err(|e| format!("备份旧引擎失败：{e}"))?;
+    }
+    if let Err(e) = std::fs::rename(&stage, &target) {
+        if backup.exists() {
+            let _ = std::fs::rename(&backup, &target);
+        }
+        return Err(format!("切换引擎目录失败：{e}"));
+    }
+    let current_tmp = root.join("current.json.tmp");
+    let current = root.join("current.json");
+    std::fs::write(&current_tmp, serde_json::json!({"version": version}).to_string())
+        .map_err(|e| e.to_string())?;
+    std::fs::rename(&current_tmp, &current).map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_dir_all(&backup);
+    Ok(version)
+}
+
+#[tauri::command]
+fn engine_start(app: tauri::AppHandle) -> Result<(), String> {
+    kill_backend();
+    kill_backend_by_name();
+    spawn_backend(&app)
 }
 
 #[tauri::command]

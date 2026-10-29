@@ -36,7 +36,8 @@ python verify_eyes.py         # 闭眼正例回归（需样图目录与模型缓
 | `face_landmarker.task` | 闭眼检测模型（3.7MB） |
 | `insightface/models/buffalo_l/` | 人脸检测/识别（340MB，非商业许可，按需下载） |
 | `torch/hub/pyiqa/` | MUSIQ 权重（104MB） |
-| `tmp/` | **PyInstaller 的 `_MEI*` 解压目标**（每次约 1.1GB） |
+| `engine/<version>/` | Python 引擎（独立 onedir 包，约 424MB）；`engine/current.json` 指向当前版本 |
+| `tmp/` | 旧版 PyInstaller `_MEI*` 解压目标；已改用 onedir 引擎后仅调试时出现 |
 | `settings.json` | Rust 侧 debug 开关（`app_config_dir`） |
 
 `paths.py` 导入时：
@@ -86,13 +87,14 @@ CPU 永远兜底。首选 EP 没装时自动降级（N 卡只装了 DML 包仍�
 `models.detect()` 只转述 `hardware` 的结论，不再自己判断——避免出现
 "界面提示推荐 X、实际跑 Y"的分裂。
 
-## 2. 当前快照（最后核验 2026-10-29 12:30）
+## 2. 当前快照（最后核验 2026-10-29 17:00）
 
-- 本地版本：**0.3.2**（`tauri.conf.json` / `package.json` / `Cargo.toml` 一致）
-- 已发布版本：**v0.3.2**（GitHub Release，5 个资产）
-- 分支 master，**有 7 个提交未推送**（见 §9），工作区干净
-- **注意版本撞车**：本地 0.3.2 含「网络设置重做/持久化/onedir/色彩」等修复，
-  线上 v0.3.2 不含。下一次发版用 **0.3.3**。
+- 本地版本：**0.4.0**（`tauri.conf.json` / `package.json` / `Cargo.toml` / `engineVersion` 一致）
+- 已发布版本：**v0.3.2**（旧完整包）；另有模型资产 Release **models-v1**（非 Latest，
+  3 个 ONNX，见 docs/ONNX_MIGRATION.md）与引擎通道 **engine**（已含 0.4.0）
+- **待发布：v0.4.0**（本次提交/tag/push 后由 GitHub Actions 发布）
+- 分支 master，**有 9 个提交未推送**（见 §9），另有本轮 ONNX 分发/打包与双包更新改动未提交
+- **0.4.0 是本轮发布版本**：包含 ONNX 评分迁移、双包 UI/Engine、独立引擎通道与滚动修复。
 
 ### 本轮（2026-10-29）已完成
 
@@ -104,6 +106,11 @@ CPU 永远兜底。首选 EP 没装时自动降级（N 卡只装了 DML 包仍�
 | NIMA → ONNX | 124/124 张，最大 Δ = **0.0000** | `temp/onnx_spike_notes.md` |
 | MUSIQ → ONNX | 124/124 张，Δ ≤ **0.0001** | 同上 |
 | ONNX 推理接线 | 两模式整数分数与 torch **差 0** | `backend/onnx_score.py` + `aesthetic.py` |
+| ONNX 模型分发 | 3 个资产上传到 **models-v1**（非 Latest） | GitHub Release 资产 digest 与本地 SHA256 一致 |
+| ONNX 打包 | sidecar **423.9 MB**，安装包 **124.4 MiB**（旧 337.1 MiB） | `dist-backend` 无 torch/pyiqa/pandas 等；doctor 通过 |
+| ONNX 124 张验收 | 80 张有分 **Δ=0.0000**，49 组，status/胜出变化 **0** | 安装版 vs 当前源码 torch 基线 |
+| 回归测试 | `selftest.py` **18 项 ALL PASS**（含 PK/召回/撤销/organize） | 2026-10-29 13:55 |
+| 双包更新（端到端） | UI setup **2.35 MiB** + Engine ZIP **173.73 MiB**；UI-only 安装版从 GitHub `engine` 通道真实下载/验签/解压/切换并启动，124 张扫描与 torch 基线一致 | `docs/DUAL_PACKAGE.md` |
 
 ### 仓库体积约束
 
@@ -113,10 +120,12 @@ CPU 永远兜底。首选 EP 没装时自动降级（N 卡只装了 DML 包仍�
 
 ## 3. 当前待办
 
-1. **【下一步·必做】按 `docs/ONNX_MIGRATION.md` 完成 ONNX 分发与打包**：
-   上传 3 个 `.onnx` 资产 → `models.py` 加下载条目 → PyInstaller 排除
-   `torch/torchvision/pyiqa` → 打包 → 扫 124 张验收。四步必须一次做完。
-2. 双包更新（界面包 ~15MB / 引擎包 ~150MB 分离）——ONNX 完成后再做。
+1. **【已完成 2026-10-29】ONNX 分发与打包**：models-v1 三个资产、
+   `models.py` 下载条目、PyInstaller 排除 torch/torchvision/pyiqa、安装版
+   124 张验收全通过（证据见 §2 与 `docs/ONNX_MIGRATION.md`）。
+2. **【完成】双包更新**（界面包 ~15MB / 引擎包 ~150MB 分离）：
+   UI-only + Engine ZIP 已构建；`engine` 通道已发布并完成真实下载/验签/解压/启动，
+   应用正式发版（v0.3.3）尚未执行。
 3. 【待用户】正面人像含闭眼样本 → EAR 阈值校准（用户未确认重视此项，优先级低）。
 
 ## 4. 关键入口
@@ -224,11 +233,13 @@ C:\Users\11726\AppData\Local\Temp = "F:\git\jurymate\temp"; C:\Users\11726\AppDa
 - 与 Git/源码/用户指示冲突时，以更新的可验证证据为准并修正本文件
 
 
-## 9. 会话交接（2026-10-29 12:30）
+## 9. 会话交接（2026-10-29 16:20）
 
-### 未推送的提交（7 个，master）
+### 未推送的提交（9 个，master）
 
 ```
+493ab7e docs(progress): 补充路径与哈希校验章节（§9.1）
+16475a1 docs(progress): 记录 2026-10-29 进度与交接
 2253e15 docs: ONNX 迁移交接文档
 261946f feat(score): aesthetic 接入 ONNX 分支（有模型走 ONNX，否则回退 torch）
 6ea564e feat(score): 新增 ONNX 推理后端（未接线）
@@ -241,9 +252,9 @@ c58e9a3 fix(settings): 评分模式/权重改为应用级持久化
 ### 下一会话从这里开始
 
 1. 先跑 §1 的接手校准命令
-2. 读 `docs/ONNX_MIGRATION.md`（含可复现的导出脚本）
-3. 读 `temp/onnx_spike_notes.md`（全部实测数据与踩坑记录，注意 temp 不入库但本机还在）
-4. 按 `docs/ONNX_MIGRATION.md` 的「剩余步骤 1→4」一次做完
+2. 读 `docs/ONNX_MIGRATION.md`（含可复现导出脚本与 2026-10-29 完成记录）
+3. ONNX 分发与打包已完成；双包更新（含 `engine` 通道真实下载验证）完成，下一步是 **应用正式发版 v0.3.3**（见 §3、`docs/DUAL_PACKAGE.md`）
+4. `temp/onnx_spike_notes.md` 保留全部实测数据，注意 temp 不入库但本机还在
 
 ### 现成的 ONNX 产物（本机，未入库）
 

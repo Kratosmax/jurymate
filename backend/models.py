@@ -9,16 +9,17 @@
 - 两者都不配 = 纯直连。
 网络设置持久化到 <数据目录>/net_settings.json（见 paths.py）。
 
-三条模型均从各自原仓库下载（不经过任何第三方选片项目）：
+模型来源（不经过任何第三方选片项目）：
 - face_landmarker.task：Google MediaPipe 官方 storage
 - buffalo_l：insightface 官方 GitHub release
-- musiq 权重：pyiqa 作者的 HuggingFace 仓库
+- NIMA / MUSIQ：本仓库 GitHub Release 的 ONNX 资产（由 pyiqa 原始权重导出）
 
 获取方式（都已被管线隐式依赖）：
 - face_landmarker.task：闭眼检测（MediaPipe Tasks）——本模块下载
 - buffalo_l：insightface 人脸检测/识别——本模块下载；未下载时 insightface
   首次调用也会自行下载到同一目录（两条路径落到同一处）
-- musiq 权重：pyiqa 美学评分——本模块下载；未下载时 pyiqa 首次评分自行下载
+- NIMA / MUSIQ：ONNX 推理——本模块下载到 <数据目录>/onnx/。
+  MUSIQ 横竖各一份，两个文件都就绪才算安装完成。
 发布红线：buffalo_l 权重为 insightface 非商业许可，**不随安装包分发**，
 由用户按需下载（本模块即该下载入口）。
 """
@@ -167,22 +168,29 @@ def models() -> list[dict]:
             "id": "nima",
             "name": "NIMA 审美评分权重（审美优先）",
             "size_mb": 208,
-            "path": paths.torch_dir() / "hub" / "pyiqa"
-                    / "NIMA_InceptionV2_ava-b0c77c00.pth",
-            "url": ("https://hf-mirror.com/chaofengc/IQA-PyTorch-Weights/resolve/main/"
-                    "NIMA_InceptionV2_ava-b0c77c00.pth"),
+            "size_bytes": 217340947,
+            "path": root / "onnx" / "nima.onnx",
+            "url": ("https://github.com/Kratosmax/jurymate/releases/download/"
+                    "models-v1/nima.onnx"),
             "unpack": "file",
         },
         {
             "id": "musiq",
             "name": "MUSIQ 画质评分权重（画质优先）",
-            "size_mb": 104,
-            # pyiqa 按 torch.hub.get_dir()/pyiqa/<url 文件名> 查找；paths.py 已把
-            # TORCH_HOME 钉到数据目录，故这里是 <数据目录>/torch/hub/pyiqa/<文件>
-            "path": paths.torch_dir() / "hub" / "pyiqa"
-                    / "musiq_koniq_ckpt-e95806b9.pth",
-            "url": ("https://hf-mirror.com/chaofengc/IQA-PyTorch-Weights/resolve/main/"
-                    "musiq_koniq_ckpt-e95806b9.pth"),
+            "size_mb": 208,
+            "size_bytes": 217853734,
+            "path": root / "onnx" / "musiq_land.onnx",
+            # MUSIQ 按长宽比分横竖两版，两个文件都就绪才算安装完成
+            "files": [
+                {"path": root / "onnx" / "musiq_land.onnx",
+                 "url": ("https://github.com/Kratosmax/jurymate/releases/download/"
+                         "models-v1/musiq_land.onnx"),
+                 "bytes": 108926867},
+                {"path": root / "onnx" / "musiq_port.onnx",
+                 "url": ("https://github.com/Kratosmax/jurymate/releases/download/"
+                         "models-v1/musiq_port.onnx"),
+                 "bytes": 108926867},
+            ],
             "unpack": "file",
         },
     ]
@@ -205,8 +213,12 @@ def detect() -> dict:
             "vendor": hw["vendor"], "ranked": hw["ranked"],
             "models": models_list, "net": net}
 
-def _download_via_routes(routes, dest: Path, http_proxy: str | None, dl: dict) -> None:
-    """按路由列表降级下载；代理对每条路由统一生效。"""
+def _download_via_routes(routes, dest: Path, http_proxy: str | None, dl: dict,
+                         done_base: int = 0, total_hint: int = 0) -> None:
+    """按路由列表降级下载；代理对每条路由统一生效。
+
+    done_base/total_hint 用于一条模型包含多个文件时，把进度累计到整个模型，
+    而不是每换一个文件就从 0% 重新开始。"""
     opener = _opener(http_proxy)
     last_err = None
     for url, channel in routes:
@@ -223,7 +235,8 @@ def _download_via_routes(routes, dest: Path, http_proxy: str | None, dl: dict) -
                         break
                     fh.write(chunk)
                     got += len(chunk)
-                    dl.update(done=got, total=total or got)
+                    dl.update(done=done_base + got,
+                              total=total_hint or total or done_base + got)
             tmp.replace(dest)
             log.info("models: %s 下载成功（%s，%d 字节）", dest.name, channel, got)
             return
@@ -232,15 +245,26 @@ def _download_via_routes(routes, dest: Path, http_proxy: str | None, dl: dict) -
             log.warning("models: 通道 %s 失败: %s", channel, e)
     raise last_err or RuntimeError("所有下载通道均失败")
 
+def _model_files(m: dict) -> list[Path]:
+    """模型包含的所有落盘路径。单文件模型只有 path；MUSIQ 是横竖两个文件。"""
+    files = m.get("files")
+    if files:
+        return [Path(f["path"]) for f in files]
+    return [Path(m["path"])]
+
+
 def _installed(m: dict) -> bool:
-    """安装判据：文件非空 / 目录非空。目录型模型（buffalo_l）不能只判 exists，
+    """安装判据：所有文件非空 / 目录非空。目录型模型（buffalo_l）不能只判 exists，
     否则一个下载失败的半截 zip 文件也会被当成"已就绪"。"""
-    p = Path(m["path"])
-    if not p.exists():
-        return False
-    if p.is_file():
-        return p.stat().st_size > 0
-    return any(p.iterdir())
+    for p in _model_files(m):
+        if not p.exists():
+            return False
+        if p.is_file():
+            if p.stat().st_size <= 0:
+                return False
+        elif not any(p.iterdir()):
+            return False
+    return True
 
 def _unpack_zip(zip_path: Path, dest: Path) -> None:
     """解压到 dest 目录，按 basename 拍平。
@@ -275,39 +299,55 @@ def download(model_id: str) -> None:
         return
     net = load_net_settings()
     _apply_proxy_env(net.get("http_proxy"))
-    routes = _routes_for(m["url"], net)
     if m.get("unpack") == "zip":
         # zip 型（buffalo_l）：先下到同名 .zip，解压成目录后再清理
+        routes = _routes_for(m["url"], net)
         zip_path = dest.parent / (dest.name + ".zip")
         _download_via_routes(routes, zip_path, net.get("http_proxy"), DL)
         _unpack_zip(zip_path, dest)
-    else:
-        _download_via_routes(routes, dest, net.get("http_proxy"), DL)
+        return
+    files = m.get("files") or [{"path": m["path"], "url": m["url"]}]
+    total_hint = int(m.get("size_bytes") or
+                     sum(int(f.get("bytes") or 0) for f in files))
+    done_base = 0
+    for f in files:
+        fd = Path(f["path"])
+        if _installed({"path": fd}):
+            done_base += fd.stat().st_size if fd.exists() else 0
+            continue
+        _download_via_routes(_routes_for(f["url"], net), fd, net.get("http_proxy"), DL,
+                             done_base=done_base, total_hint=total_hint)
+        done_base += fd.stat().st_size
 
 def remove(model_id: str) -> tuple[bool, str]:
     """删除单个模型的本地权重/目录，用于"按需删除、回到未下载状态"。
 
-    只删自己这一个：用户可能只想腾出 MUSIQ 的 104MB，而不想连人脸模型一起重下。
+    只删自己这一个：用户可能只想腾出 MUSIQ 的 208MB，而不想连人脸模型一起重下。
     """
     m = next((x for x in models() if x["id"] == model_id), None)
     if not m:
         return False, f"未知模型 {model_id}"
     if DL["running"]:
         return False, "下载进行中，请稍后再试"
-    p = Path(m["path"])
+    paths_ = _model_files(m)
     try:
-        if p.is_dir():
-            shutil.rmtree(p)
-        elif p.exists():
-            p.unlink()
-        # 下载失败留下的半截 .part 也一并清掉，否则占用统计对不上
-        part = p.with_suffix(p.suffix + ".part")
-        if part.exists():
-            part.unlink()
+        for p in paths_:
+            if p.is_dir():
+                shutil.rmtree(p)
+            elif p.exists():
+                p.unlink()
+            # 下载失败留下的半截 .part 也一并清掉，否则占用统计对不上
+            part = p.with_suffix(p.suffix + ".part")
+            if part.exists():
+                part.unlink()
+            if m.get("unpack") == "zip":
+                z = p.parent / (p.name + ".zip")
+                if z.exists():
+                    z.unlink()
     except Exception as e:
         log.warning("models: 删除 %s 失败：%s", model_id, e)
         return False, f"删除失败：{e}"
-    log.info("models: 已删除 %s（%s）", model_id, p)
+    log.info("models: 已删除 %s（%s）", model_id, ", ".join(str(x) for x in paths_))
     return True, ""
 
 

@@ -46,7 +46,7 @@ JuryMate 把一次拍摄中的几十上百张照片自动完成**技术初筛（
 | Apple Silicon | CoreML |
 | 无独显 | CPU |
 
-模型按需下载（约 440MB），**不会捆绑在任何安装包里**。下载源为各模型的原仓库，
+模型按需下载（评分约 208MB + 人脸/闭眼约 334MB），**不会捆绑在任何安装包里**。下载源为各模型的原仓库，
 默认直连；若网络不通，可在「网络设置」里按需开启 GitHub 镜像站或填入 HTTP 代理。
 
 ## 下载与安装
@@ -55,30 +55,33 @@ JuryMate 把一次拍摄中的几十上百张照片自动完成**技术初筛（
 
 | 文件 | 适用 |
 |---|---|
-| `JuryMate_x.y.z_x64-setup.exe` | 大多数用户。安装到系统，带卸载，支持自动更新 |
-| `JuryMate_x.y.z_x64.zip` | 免安装便携版。解压即用 |
+| `JuryMate_x.y.z_x64-setup.exe` | 大多数用户。UI 安装包，首次启动自动下载引擎 |
+| `JuryMate_Engine_x.y.z_x64.zip` | Python 引擎包（约 180MB），一般由界面自动下载 |
+| `JuryMate_x.y.z_x64.zip` | 免安装 UI 便携版，仍需下载引擎后才能使用 |
 
-**只支持 Windows x64。** 本版不提供 Lite 包：后端是 Python sidecar
-（Flask + insightface + pyiqa + MediaPipe），依赖约 2GB，无法形成有意义的轻量包；
-安装包已内置运行时，不需要你单独装 Python。
+**只支持 Windows x64。** 本版采用双包：UI 与 Python 引擎分离，
+UI 更新约几 MB，引擎只在算法变化时更新（约 180MB）。
+引擎包已内置 Python 运行时，不需要你单独装 Python。
 
 **系统要求**：Windows 10 1809 及以上 / Windows 11。
 
 ### 首次使用
 
-1. 启动后首页出现「模型就绪检查」，三个模型共约 440MB 需按需下载
-   （闭眼检测 3.7MB / 人脸 330MB / 审美评分 104MB）。
-2. 国内网络若失败，在「网络设置」勾选镜像站或填 HTTP 代理。
-   **模型缺失时程序会明确报错引导下载，不会静默产出错误结果。**
-3. 填入照片文件夹路径 → 开始整理。
+1. 首次启动先下载并安装 Python 引擎（约 180MB；界面会校验签名与 SHA256）。
+2. 引擎就绪后首页出现「模型就绪检查」，评分模型按模式下载
+   （NIMA 约 208MB 或 MUSIQ 约 208MB），另加闭眼检测 3.7MB / 人脸 330MB。
+3. 国内网络若失败，在「网络设置」勾选镜像站或填 HTTP 代理。
+   **模型/引擎缺失时程序会明确报错引导下载，不会静默产出错误结果。**
+4. 填入照片文件夹路径 → 开始整理。
 
 ### 自动更新
 
-应用内「检查更新」会读取 GitHub Release 上的清单并升级。
+应用内「检查更新」会读取 GitHub Release 上的 UI 清单并升级；
+「设置 → 引擎」单独检查并更新 Python 引擎。
 
 - **更新器访问 GitHub 用的是系统代理**，不是应用内的「网络设置」。
   若检查更新失败，先确认系统代理已开启（或能直连 github.com）。
-- 应用内「网络设置」里的代理与镜像只作用于**模型下载**，两者互不影响。
+- 应用内「网络设置」里的代理与镜像作用于**模型下载与引擎下载**，两者共用同一套线路。
 - 升级过程中请勿手动结束安装程序；若提示某文件被占用，
   在任务管理器结束 `jury-backend.exe` 后重试。
 
@@ -121,8 +124,9 @@ python app.py --port 5090 --no-browser
 
 | 子目录 | 内容 | 典型占用 |
 |---|---|---|
+| `engine/` | Python 引擎（独立包，按版本存放） | 约 424MB |
 | `insightface/` | 人脸模型 buffalo_l | 约 330MB |
-| `torch/` | 审美评分 MUSIQ 权重 | 约 104MB |
+| `onnx/` | NIMA / MUSIQ ONNX 评分模型 | 约 208MB（单模式） |
 | `tmp/` | 调试模式的运行时解压 | 仅手动跑源码时出现 |
 | `logs/` | 后端日志（滚动 5×2MB） | 几 MB |
 
@@ -153,11 +157,12 @@ cd ..
 pip install pyinstaller
 cd build-backend && pyinstaller --name jury-backend --onedir ../backend/app.py && cd ..
 
-# 4. 打安装包（需签名环境变量，见下）
-npm run tauri build
+# 4. 打双包（UI setup + Engine ZIP；需签名环境变量，见下）
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\dev-build.ps1
 ```
 
-产物位置：`src-tauri/target/release/bundle/nsis/`。
+产物位置：`src-tauri/target/release/bundle/nsis/`（UI 安装包）
+与 `dist-engine/`（Engine ZIP + engine.json + .sig）。
 
 ### 构建临时目录（C 盘紧张时必看）
 

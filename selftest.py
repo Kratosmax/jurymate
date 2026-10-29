@@ -46,7 +46,7 @@ def api(path, body=None, method=None):
 def main():
     # 0) 依赖自检（幂等修复提示）
     try:
-        import onnxruntime, cv2, insightface, pyiqa, pkg_resources  # noqa
+        import onnxruntime, cv2, insightface, pkg_resources  # noqa
         check("依赖导入", True, f"providers={onnxruntime.get_available_providers()}")
     except Exception as e:
         check("依赖导入", False, f"{e} —— 按 CODEX_PROGRESS.md 的验证矩阵修依赖后重跑")

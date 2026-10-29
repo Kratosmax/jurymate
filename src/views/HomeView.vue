@@ -186,7 +186,7 @@ const etaText = () => {
         已复制到 winners/ 的照片不会被动。
       </div>
       <div v-if="!backendReady" style="margin-top: 10px; font-size: 12px; color: var(--dim)">
-        <span class="spin" /> 正在启动后端，已等 {{ bootSecs }} 秒（首次安装要解压约 1.1GB 运行时，最长约 90 秒）…
+        <span class="spin" /> 正在启动后端，已等 {{ bootSecs }} 秒（首次启动可能需要初始化引擎，最长约 90 秒）…
       </div>
       <div style="margin-top: 10px; font-size: 12px; color: var(--dim)">
         最近：<template v-for="(d, i) in recent.slice(0, 3)" :key="d"><a href="#"

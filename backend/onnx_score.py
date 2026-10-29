@@ -44,14 +44,27 @@ def _session(path: Path) -> ort.InferenceSession:
 
 
 def _nima_input(im: Image.Image) -> np.ndarray:
+    """NIMA 预处理，必须与 torchvision Tensor resize 的数值一致。
+
+    关键：先转 float32 再逐通道用 PIL 'F' 模式双线性缩放。直接对 8-bit RGB
+    调 Image.resize 会带入量化误差，实测 80 张最多差 0.43（1~10 量纲）；
+    改为 float 通道后与 torchvision 完全一致（max=0.0000）。
+    """
     im = im.convert("RGB")
     w, h = im.size
     s = NIMA_SIZE / min(w, h)
-    im2 = im.resize((max(NIMA_SIZE, round(w * s)), max(NIMA_SIZE, round(h * s))), Image.BILINEAR)
-    x0 = (im2.width - NIMA_SIZE) // 2
-    y0 = (im2.height - NIMA_SIZE) // 2
-    crop = im2.crop((x0, y0, x0 + NIMA_SIZE, y0 + NIMA_SIZE))
-    a = np.asarray(crop, dtype=np.float32) / 255.0
+    tw, th = max(NIMA_SIZE, round(w * s)), max(NIMA_SIZE, round(h * s))
+    arr = np.asarray(im, dtype=np.float32)
+    chans = []
+    for ch in range(3):
+        f = Image.fromarray(arr[:, :, ch], mode="F")
+        f = f.resize((tw, th), Image.Resampling.BILINEAR)
+        chans.append(np.asarray(f, dtype=np.float32))
+    im2 = np.stack(chans, axis=2)
+    x0 = (tw - NIMA_SIZE) // 2
+    y0 = (th - NIMA_SIZE) // 2
+    crop = im2[y0:y0 + NIMA_SIZE, x0:x0 + NIMA_SIZE]
+    a = crop / 255.0
     return ((a - 0.5) / 0.5).transpose(2, 0, 1)[None]
 
 

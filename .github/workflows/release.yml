@@ -112,15 +112,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path build-backend, dist-backend | Out-Null
-          # torchvision 的 _C_stable.pyd 必须显式带上：torchvision.extension
-          # 用 torch.ops.load_library() 按**文件路径**加载它，而 onefile 下
-          # PyInstaller 不保证它落在 torchvision 包目录旁，运行时就报
-          #   RuntimeError: operator torchvision::nms does not exist
-          # 源码环境完全正常，只有打包版会崩。配套用了 runtime hook 兜底。
-          $tvPkg = python -c "import torchvision,os;print(os.path.dirname(torchvision.__file__))"
-          $tvC = Join-Path $tvPkg.Trim() "_C_stable.pyd"
-          if (-not (Test-Path $tvC)) { throw "找不到 torchvision 的 _C_stable.pyd: $tvC" }
-          Write-Host "torchvision C 扩展: $tvC"
+          # 评分已改为 ONNX：torch/torchvision/pyiqa 全部排除，安装包不再背 365MB torch。
           Push-Location build-backend
           try {
             python -m PyInstaller --name jury-backend --onedir ../backend/app.py `
@@ -132,25 +124,27 @@ jobs:
               --hidden-import=mediapipe.tasks.c `
               --hidden-import=insightface.app `
               --hidden-import=insightface.utils.face_align `
-              --hidden-import=pyiqa.archs.musiq_arch `
               --hidden-import=onnxruntime.capi.onnxruntime_pybind11_state `
-              --hidden-import=torchvision.extension `
-              --hidden-import=torchvision._internally_replaced_utils `
+              --hidden-import=onnx_score `
+              --exclude-module=torch `
+              --exclude-module=torchvision `
+              --exclude-module=pyiqa `
+              --exclude-module=pandas `
+              --exclude-module=pyarrow `
+              --exclude-module=numba `
+              --exclude-module=llvmlite `
               --collect-binaries=mediapipe `
-              --collect-data=mediapipe `
-              --add-binary="$tvC;torchvision" `
-              --runtime-hook="../scripts/pyi-rthook-torchvision.py"
+              --collect-data=mediapipe
             if ($LASTEXITCODE -ne 0) { throw "PyInstaller 失败" }
           } finally { Pop-Location }
 
           $exe = "dist-backend/jury-backend/jury-backend.exe"
           if (-not (Test-Path $exe)) { throw "产物缺失: $exe" }
 
-          # 防回归（真正的验收）：让产物自己 import 一遍并实调 torchvision::nms。
+          # 防回归（真正的验收）：让产物自己 import 一遍 onnxruntime / onnx_score。
           # 函数内延迟导入的模块 PyInstaller 静态分析看不到，源码环境跑一万遍
           # 也发现不了；而读 warn-*.txt 做文本匹配必然被无害的可选缺失
           # （fcntl/wandb/albumentations 等）干扰，写出来就是误报。
-          # 实测：故意漏收 torchvision 时这里的退出码为 1。
           #
           # sidecar 是 --windowed 打包，没有控制台，print() 进不了 CI 日志
           # （实测确认过：只看到源码回显、看不到 [ OK ] 行）。
@@ -190,6 +184,49 @@ jobs:
           Write-Host "Subsystem=2 校验通过（无控制台窗口）"
           Get-ChildItem dist-backend | Format-Table Name, Length
 
+      - name: Build engine package
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: \${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: \${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $pkg = Get-Content package.json -Raw | ConvertFrom-Json
+          $ver = if ($pkg.engineVersion) { [string]$pkg.engineVersion } else { [string]$pkg.version }
+          $out = "dist-engine"
+          $stage = Join-Path $out "JuryMate_Engine_$ver"
+          $zip = Join-Path $out "JuryMate_Engine_$($ver)_x64.zip"
+          if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item "dist-backend/jury-backend" $stage -Recurse
+          [IO.File]::WriteAllText((Join-Path $stage "engine.json"), (@{ version = $ver } | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
+          Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zip -CompressionLevel Optimal -Force
+          Remove-Item "$zip.sig" -Force -ErrorAction SilentlyContinue
+          $keyPath = Join-Path $env:RUNNER_TEMP "jurymate-engine.key"
+          [IO.File]::WriteAllText($keyPath, $env:TAURI_SIGNING_PRIVATE_KEY, (New-Object Text.UTF8Encoding($false)))
+          try {
+            Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY -ErrorAction SilentlyContinue
+            npx tauri signer sign --app-version $ver -f $keyPath $zip
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path "$zip.sig")) { throw "引擎包签名失败" }
+          } finally {
+            Remove-Item $keyPath -Force -ErrorAction SilentlyContinue
+          }
+          $sig = (Get-Content "$zip.sig" -Raw).Trim()
+          $sha = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          $manifest = @{
+            version = $ver
+            notes = "JuryMate 引擎 v$ver"
+            pub_date = (Get-Date).ToUniversalTime().ToString("o")
+            platforms = @{
+              "windows-x86_64" = @{
+                signature = $sig
+                url = "https://github.com/Kratosmax/jurymate/releases/download/engine/JuryMate_Engine_$($ver)_x64.zip"
+                sha256 = $sha
+              }
+            }
+          } | ConvertTo-Json -Depth 8
+          [IO.File]::WriteAllText((Join-Path $out "engine.json"), $manifest, (New-Object Text.UTF8Encoding($false)))
+          Get-ChildItem $out | Format-Table Name, Length
+
       - name: Build Tauri bundles
         shell: bash
         env:
@@ -205,6 +242,9 @@ jobs:
           mkdir -p out
           cp src-tauri/target/release/bundle/nsis/*-setup.exe out/ 2>/dev/null || true
           cp src-tauri/target/release/bundle/nsis/*-setup.exe.sig out/ 2>/dev/null || true
+          cp dist-engine/*.zip out/ 2>/dev/null || true
+          cp dist-engine/*.zip.sig out/ 2>/dev/null || true
+          cp dist-engine/engine.json out/ 2>/dev/null || true
           echo "--- 收集到的文件 ---"
           ls -lh out/
           if ! ls out/*-setup.exe.sig >/dev/null 2>&1; then
@@ -212,7 +252,7 @@ jobs:
             exit 1
           fi
 
-      # 便携版：exe + 随包 sidecar + 前端产物，解压即用
+      # 便携版只装 UI 壳；引擎用独立的 JuryMate_Engine_*.zip 分发
       - name: Build portable zip
         shell: pwsh
         run: |
@@ -220,9 +260,8 @@ jobs:
           $stage = "stage/JuryMate-$ver"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item "src-tauri/target/release/jurymate.exe" "$stage/JuryMate.exe"
-          Copy-Item "dist-backend" "$stage/dist-backend" -Recurse
           Copy-Item "README.md","LICENSE","RELEASE_NOTES_CURRENT.md" $stage
-          Compress-Archive -Path $stage -DestinationPath "out/JuryMate_${ver}_x64.zip" -Force
+          Compress-Archive -Path $stage -DestinationPath "out/JuryMate_$($ver)_x64.zip" -Force
           Get-ChildItem out | Format-Table Name, Length
 
       - name: Generate SHA256SUMS
@@ -302,7 +341,28 @@ jobs:
             out/*.zip
             out/*.sig
             out/latest.json
+            out/engine.json
             out/SHA256SUMS.txt
+
+      # 引擎走独立 engine 通道：UI Release 更新不会重复上传 180MB 引擎。
+      - name: Publish engine channel
+        if: \${{ github.event_name == 'push' || inputs.dry_run == false }}
+        shell: pwsh
+        env:
+          GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "engine"
+          $assets = @(Get-ChildItem out -File |
+            Where-Object { $_.Name -like "JuryMate_Engine_*.zip*" -or $_.Name -eq "engine.json" } |
+            ForEach-Object { $_.FullName })
+          if ($assets.Count -eq 0) { throw "缺少引擎资产" }
+          gh release view $tag 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag @assets --clobber
+          } else {
+            gh release create $tag --title "JuryMate Engine Channel" --notes "独立引擎通道；版本见 engine.json" --latest=false @assets
+          }
+          if ($LASTEXITCODE -ne 0) { throw "引擎通道发布失败" }
 
       - name: Verify release assets
         if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
@@ -313,7 +373,7 @@ jobs:
           gh release view "$GITHUB_REF_NAME" --json assets \
             --jq '.assets[] | "\(.name)\t\(.size)"'
 
-      # dry-run 的产出清单：即使不发布，也要能看到"该发的 5 个资产都在"
+      # dry-run 的产出清单：即使不发布，也要能看到 UI 与引擎资产都在
       - name: Dry-run summary
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run != false }}
         shell: bash
@@ -321,6 +381,9 @@ jobs:
           echo "=== dry-run：不创建 Release，仅列出将被发布的资产 ==="
           ls -lh out/
           test -f out/latest.json || { echo "::error::缺少 latest.json"; exit 1; }
-          ls out/*-setup.exe >/dev/null || { echo "::error::缺少 setup.exe"; exit 1; }
-          ls out/*-setup.exe.sig >/dev/null || { echo "::error::缺少 .sig"; exit 1; }
-          echo "dry-run 通过：构建、doctor、签名、清单全部正常"
+          test -f out/engine.json || { echo "::error::缺少 engine.json"; exit 1; }
+          ls out/*-setup.exe >/dev/null || { echo "::error::缺少 UI setup.exe"; exit 1; }
+          ls out/*-setup.exe.sig >/dev/null || { echo "::error::缺少 UI .sig"; exit 1; }
+          ls out/JuryMate_Engine_*.zip >/dev/null || { echo "::error::缺少引擎 ZIP"; exit 1; }
+          ls out/JuryMate_Engine_*.zip.sig >/dev/null || { echo "::error::缺少引擎 ZIP .sig"; exit 1; }
+          echo "dry-run 通过：构建、doctor、UI/引擎签名、清单全部正常"

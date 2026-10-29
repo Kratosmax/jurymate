@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "JuryMate",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "identifier": "com.jurymate.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -36,9 +36,6 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": {
-      "../dist-backend/jury-backend/": "dist-backend/jury-backend/"
-    },
     "windows": {
       "nsis": {
         "compression": "lzma",

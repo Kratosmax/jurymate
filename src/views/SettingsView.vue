@@ -8,7 +8,7 @@ import { api, waitBackend } from '../api'
 import { loadNetCfg, normalizeMirrors, saveNetCfg, type NetCfg } from '../netstore'
 
 const emit = defineEmits<{ toast: [m: string]; netsaved: []; refresh: [] }>()
-const props = defineProps<{ updater: any }>()
+const props = defineProps<{ updater: any; engine: any }>()
 
 // ---------- 存储位置 ----------
 const pathsInfo = ref<{
@@ -275,7 +275,7 @@ function modelName(id: string) {
   return id === 'nima' ? 'NIMA（审美优先）' : 'MUSIQ（画质优先）'
 }
 function modelMb(id: string) {
-  return id === 'nima' ? 208 : 104
+  return id === 'nima' ? 208 : 208
 }
 
 // 下载状态带「是哪张卡片发起的」：不加这个，两张卡片底部会同时冒进度条
@@ -496,13 +496,53 @@ onMounted(boot)
       </div>
     </section>
 
+
+    <!-- 引擎（独立于界面发布/更新） -->
+    <section class="card">
+      <h2>引擎</h2>
+      <div class="row">
+        <div>
+          <div>引擎版本
+            <b>{{ props.engine?.version ? 'v' + props.engine.version : '未安装' }}</b>
+            <span v-if="props.engine?.source" class="dim" style="font-size:11px">（{{ props.engine.source }}）</span>
+          </div>
+          <div v-if="props.engine?.updateInfo" class="dim" style="margin-top:4px">
+            可更新到 <b>v{{ props.engine.updateInfo.version }}</b>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="ghost" :disabled="props.engine?.busy || !props.engine?.ready"
+                  @click="props.engine?.check()">
+            {{ props.engine?.busy ? '处理中…' : '检查引擎更新' }}
+          </button>
+          <button v-if="props.engine?.updateInfo" class="act" :disabled="props.engine?.busy"
+                  @click="props.engine?.install()">
+            更新引擎到 v{{ props.engine.updateInfo.version }}
+          </button>
+        </div>
+      </div>
+      <div v-if="props.engine?.busy && props.engine?.stage" class="hintbar" style="margin-top:10px">
+        {{ props.engine.stage }}
+        <template v-if="props.engine.pct"> · {{ props.engine.pct }}%</template>
+        <div class="prog" style="margin-top:6px">
+          <div :style="{ width: (props.engine.pct || 0) + '%' }" />
+        </div>
+      </div>
+      <div v-if="props.engine?.error" class="hintbar" style="margin-top:10px;border-color:var(--bad);color:var(--bad)">
+        {{ props.engine.error }}
+      </div>
+      <div class="dim" style="margin-top:10px;font-size:12px">
+        引擎与界面独立更新；算法没变时，界面更新不会重复下载约 180MB 的引擎包。
+      </div>
+    </section>
+
     <!-- 存储位置 -->
     <section class="card">
       <h2>存储位置</h2>
 
       <div v-if="!backendUp && !bootFailed" class="hintbar" style="margin-bottom:10px">
         <span class="spin" /> 正在等待后端启动<span style="display:inline-block;width:52px;text-align:right;opacity:.7">{{ bootSecs }}s</span>
-        <span class="dim" style="font-size:12px">（首次安装要解压约 1.1GB 运行时；网络设置现在就可以改，已保存到本机）</span>
+        <span class="dim" style="font-size:12px">（正在等待引擎启动；网络设置现在就可以改，已保存到本机）</span>
       </div>
       <div v-if="pathErr" class="hintbar" :style="{ borderColor: 'var(--bad)', marginBottom: '10px' }">
         {{ pathErr }}
@@ -654,7 +694,7 @@ onMounted(boot)
                 :disabled="!!pendingMode" @click="chooseMode('quality')">
           <b>画质优先</b>
           <span>清晰度 · 噪点 · 压缩伪影</span>
-          <em>慢 · MUSIQ 104MB</em>
+          <em>慢 · MUSIQ 208MB</em>
         </button>
       </div>
 

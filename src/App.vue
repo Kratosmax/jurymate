@@ -2,7 +2,8 @@
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { api } from './api'
 import { cardsIn, pageEnter } from './motion'
-import { loadNetCfg, updateCandidates, updateLines } from './netstore'
+import { loadNetCfg, saveNetCfg, updateCandidates, updateLines } from './netstore'
+import { checkEngine, getEngineStatus, installEngine, isTauri, startEngine } from './engine'
 import { listen } from '@tauri-apps/api/event'
 import { relaunch } from '@tauri-apps/plugin-process'
 import { invoke } from '@tauri-apps/api/core'
@@ -42,6 +43,112 @@ const updaterApi = reactive({
   checkUpdate: (silent: boolean) => checkUpdate(silent),
   doUpdate: () => doUpdate(),
 })
+
+// ---- 引擎（Python sidecar）----
+// UI 安装包不再内置 sidecar；首次启动/引擎升级由 Rust 下载独立 Engine ZIP。
+// 这里只负责门禁和状态展示，下载、验签、解压、切换都在 Rust 侧完成。
+const engineReady = ref(!isTauri())
+const engineMissing = ref(false)
+const engineVersion = ref('')
+const engineSource = ref('')
+const engineBusy = ref(false)
+const engineStage = ref('')
+const engineGot = ref(0)
+const engineTotal = ref(0)
+const engineError = ref('')
+const engineUpdate = ref<{ version: string; notes: string } | null>(null)
+const engineCfg = reactive({ ...loadNetCfg() })
+const enginePct = computed(() =>
+  engineTotal.value ? Math.min(99, Math.round((engineGot.value / engineTotal.value) * 100)) : 0)
+
+async function refreshEngineStatus() {
+  if (!isTauri()) return
+  try {
+    const st = await getEngineStatus()
+    engineReady.value = st.installed
+    engineMissing.value = !st.installed
+    engineVersion.value = st.version ?? ''
+    engineSource.value = st.source
+  } catch (e) {
+    // IPC 异常不能把界面永久锁死；按“未安装”处理，用户点下载会得到真实错误。
+    engineReady.value = false
+    engineMissing.value = true
+    engineError.value = '读取引擎状态失败：' + String(e).slice(0, 140)
+  }
+}
+
+async function checkEngineUpdate(silent = true) {
+  if (!isTauri() || !engineReady.value) return
+  try {
+    const info = await checkEngine()
+    engineUpdate.value = info.available && info.version
+      ? { version: info.version, notes: info.notes ?? '' } : null
+    if (!silent && !info.available) toast('引擎已是最新（v' + (engineVersion.value || '?') + '）')
+  } catch (e) {
+    if (!silent) toast('检查引擎更新失败：' + String(e).slice(0, 120))
+  }
+}
+
+async function installEngineNow() {
+  if (engineBusy.value) return
+  engineBusy.value = true
+  engineError.value = ''
+  engineStage.value = '检查引擎清单'
+  engineGot.value = 0
+  engineTotal.value = 0
+  saveNetCfg({ ...engineCfg })
+  let un: (() => void) | undefined
+  try {
+    un = await listen<[number, number] | { got: number; total: number | null }>(
+      'engine://progress',
+      (ev) => {
+        const p: any = ev.payload
+        if (Array.isArray(p)) {
+          engineGot.value = p[0]
+          if (p[1]) engineTotal.value = p[1]
+        } else {
+          engineGot.value = p.got
+          if (p.total) engineTotal.value = p.total
+        }
+        engineStage.value = '下载引擎'
+      },
+    )
+    const info = await checkEngine()
+    if (!info.version) throw new Error('没有可用的引擎包')
+    engineStage.value = '下载引擎 v' + info.version
+    await installEngine()
+    engineStage.value = '启动引擎'
+    await startEngine()
+    engineReady.value = true
+    engineMissing.value = false
+    engineUpdate.value = null
+    await refreshEngineStatus()
+    await refresh()
+    checkUpdate(true)
+    toast('引擎已就绪')
+  } catch (e) {
+    engineError.value = (engineStage.value || '安装引擎') + '失败：' + String(e).slice(0, 180)
+    engineReady.value = false
+    engineMissing.value = true
+  } finally {
+    un?.()
+    engineBusy.value = false
+  }
+}
+
+const engineApi = reactive({
+  get ready() { return engineReady.value },
+  get version() { return engineVersion.value },
+  get source() { return engineSource.value },
+  get updateInfo() { return engineUpdate.value },
+  get busy() { return engineBusy.value },
+  get stage() { return engineStage.value },
+  get pct() { return enginePct.value },
+  get error() { return engineError.value },
+  check: () => checkEngineUpdate(false),
+  install: () => installEngineNow(),
+})
+
 
 // 检查更新的结果放进常驻状态（定义见文件上方 updCheck）
 async function checkUpdate(silent: boolean) {
@@ -133,6 +240,12 @@ import SettingsView from './views/SettingsView.vue'
 
 type Page = 'home' | 'pk' | 'winners' | 'review' | 'settings'
 const page = ref<Page>('home')
+// 五个页面共用同一个滚动容器（v-show 不销毁 DOM），必须按页面分别记住位置，
+// 否则胜出页下滑后切到复查页会继承同一 scrollTop，看起来像两个页面串了滚动条。
+const viewHost = ref<HTMLElement | null>(null)
+const scrollPos = reactive<Record<Page, number>>({
+  home: 0, pk: 0, winners: 0, review: 0, settings: 0,
+})
 const S = ref<import('./api').State | null>(null)
 const toastMsg = ref('')
 let toastTimer: ReturnType<typeof setTimeout> | undefined
@@ -154,11 +267,14 @@ async function refresh() {
 }
 function go(p: Page) {
   if (p === page.value) return
+  const host = viewHost.value
+  if (host) scrollPos[page.value] = host.scrollTop
   page.value = p
   // 切页动画必须在"DOM 已更新、但还没绘制"这一瞬间启动（nextTick）。
   // 之前用 requestAnimationFrame，那是下一帧绘制之后才跑——用户会先看到
   // 新页面完整出现，再被动画拉回 opacity:0 重放一次，表现为"闪一下/抖一下"。
   nextTick(() => {
+    if (host) host.scrollTop = scrollPos[p]
     const el = Array.from(
       document.querySelectorAll<HTMLElement>('.view-host .view'),
     ).find((e) => e.offsetParent !== null)
@@ -196,9 +312,12 @@ onMounted(() => {
   window.addEventListener('resize', syncPill)
 })
 
-onMounted(() => {
-  refresh()
-  checkUpdate(true)   // 启动静默检查
+onMounted(async () => {
+  await refreshEngineStatus()
+  if (engineReady.value) {
+    refresh()
+    checkUpdate(true)   // 启动静默检查
+  }
   // 禁掉 WebView2 的默认右键菜单：里面是"共享/打印/复制图像/复制图像链接/
   // 另存为/放大"这些浏览器功能，对本地选片工具没有意义。
   // 用 capture 阶段拦，保证在页面任何元素之前生效；
@@ -226,14 +345,37 @@ onMounted(() => {
       <div style="margin-top:6px;font-size:10px;opacity:.6">v{{ APP_VERSION }}</div>
     </div>
   </nav>
-  <div class="main">
-    <div class="view-host">
+
+  <div v-if="!engineReady" class="engine-gate">
+    <div class="engine-gate-card">
+      <div class="engine-kicker">JURY MATE · ENGINE</div>
+      <h1>首次使用需要下载引擎</h1>
+      <p>界面包只包含界面。Python 引擎约 180MB，只在算法更新时更换；下载一次后界面可独立更新。</p>
+      <label class="engine-opt"><input type="checkbox" v-model="engineCfg.use_mirror" /> 使用 GitHub 镜像加速</label>
+      <input v-model="engineCfg.http_proxy" type="text" class="engine-proxy"
+             placeholder="HTTP 代理地址（可选，如 http://127.0.0.1:10808）" />
+      <button class="act" :disabled="engineBusy" @click="installEngineNow">
+        {{ engineBusy ? engineStage : '下载并安装引擎' }}
+      </button>
+      <div v-if="engineBusy" class="prog" style="margin-top:14px">
+        <div :style="{ width: enginePct + '%' }" />
+      </div>
+      <div v-if="engineBusy && engineStage" class="engine-stage">
+        {{ engineStage }}<span v-if="engineTotal"> · {{ enginePct }}%</span>
+      </div>
+      <div v-if="engineError" class="engine-error">{{ engineError }}</div>
+      <div class="engine-hint">下载会校验签名与 SHA256，安装到数据目录，不会修改界面安装目录。</div>
+    </div>
+  </div>
+
+  <div v-if="engineReady" class="main">
+    <div class="view-host" ref="viewHost">
       <HomeView v-show="page === 'home'" :state="S" @go="go" @toast="toast" @refresh="refresh" />
       <DecideView v-show="page === 'pk'" :state="S" @done="refresh" @toast="toast" />
       <WinnersView v-show="page === 'winners'" :state="S" @changed="refresh" @toast="toast" />
       <ReviewView v-show="page === 'review'" :state="S" @changed="refresh" @toast="toast" />
       <SettingsView v-show="page === 'settings'" @toast="toast" @netsaved="() => {}"
-                    @refresh="refresh" :updater="updaterApi" />
+                    @refresh="refresh" :updater="updaterApi" :engine="engineApi" />
     </div>
   </div>
   <transition name="toast">
@@ -250,4 +392,23 @@ onMounted(() => {
 }
 .toast-enter-active, .toast-leave-active { transition: all .25s var(--ease); }
 .toast-enter-from, .toast-leave-to { opacity: 0; transform: translate(-50%, 12px); }
+
+/* 首次启动/引擎缺失门禁：不依赖后端，先让用户把引擎装好 */
+.engine-gate {
+  position: fixed; inset: 0; z-index: 80; display: flex; align-items: center;
+  justify-content: center; padding: 24px; background: rgba(8, 8, 10, .88);
+  backdrop-filter: blur(10px);
+}
+.engine-gate-card {
+  width: min(560px, 100%); background: var(--panel); border: 1px solid var(--line);
+  border-radius: 16px; padding: 28px; box-shadow: 0 24px 70px rgba(0,0,0,.55);
+}
+.engine-kicker { color: var(--acc); font-size: 11px; letter-spacing: .18em; margin-bottom: 10px; }
+.engine-gate-card h1 { font-size: 22px; margin-bottom: 10px; }
+.engine-gate-card p { color: var(--dim); font-size: 13px; line-height: 1.7; margin-bottom: 18px; }
+.engine-opt { display: flex; align-items: center; gap: 8px; color: var(--dim); font-size: 12px; margin-bottom: 10px; }
+.engine-proxy { width: 100%; margin-bottom: 16px; }
+.engine-stage { color: var(--dim); font-size: 12px; margin-top: 8px; }
+.engine-error { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--bad); border-radius: 8px; color: var(--bad); font-size: 12px; line-height: 1.6; }
+.engine-hint { margin-top: 16px; color: var(--dim); font-size: 11px; line-height: 1.6; }
 </style>
