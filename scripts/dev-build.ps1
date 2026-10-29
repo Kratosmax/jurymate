@@ -41,6 +41,8 @@ $env:TEMP = $tmp
 $env:TMP = $tmp
 # PyInstaller 的 --workpath 已是显式传入，这里再钉一次相关缓存
 $env:PYINSTALLER_CONFIG_DIR = Join-Path $tmp "pyinstaller-cache"
+$env:PIP_CACHE_DIR = Join-Path $tmp "pip-cache"
+$env:NPM_CONFIG_CACHE = Join-Path $tmp "npm-cache"
 
 Say "临时目录已改道: $tmp"
 Show-TempUsage
