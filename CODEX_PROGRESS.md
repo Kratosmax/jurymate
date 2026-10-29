@@ -87,7 +87,7 @@ CPU 永远兜底。首选 EP 没装时自动降级（N 卡只装了 DML 包仍�
 `models.detect()` 只转述 `hardware` 的结论，不再自己判断——避免出现
 "界面提示推荐 X、实际跑 Y"的分裂。
 
-## 2. 当前快照（最后核验 2026-10-29 17:00）
+## 2. 当前快照（最后核验 2026-10-29 17:50）
 
 - 本地版本：**0.4.0**（`tauri.conf.json` / `package.json` / `Cargo.toml` / `engineVersion` 一致）
 - 已发布版本：**v0.4.0**（[Release](https://github.com/Kratosmax/jurymate/releases/tag/v0.4.0)，8 个资产）；
@@ -125,7 +125,7 @@ CPU 永远兜底。首选 EP 没装时自动降级（N 卡只装了 DML 包仍�
    124 张验收全通过（证据见 §2 与 `docs/ONNX_MIGRATION.md`）。
 2. **【完成】双包更新**（界面包 ~15MB / 引擎包 ~150MB 分离）：
    UI-only + Engine ZIP 已构建；`engine` 通道已发布并完成真实下载/验签/解压/启动，
-   应用正式发版（v0.3.3）尚未执行。
+   应用正式版 **v0.4.0 已发布**（[Release](https://github.com/Kratosmax/jurymate/releases/tag/v0.4.0)）。
 3. 【待用户】正面人像含闭眼样本 → EAR 阈值校准（用户未确认重视此项，优先级低）。
 
 ## 4. 关键入口
@@ -253,7 +253,7 @@ c58e9a3 fix(settings): 评分模式/权重改为应用级持久化
 
 1. 先跑 §1 的接手校准命令
 2. 读 `docs/ONNX_MIGRATION.md`（含可复现导出脚本与 2026-10-29 完成记录）
-3. ONNX 分发与打包已完成；双包更新（含 `engine` 通道真实下载验证）完成，下一步是 **应用正式发版 v0.3.3**（见 §3、`docs/DUAL_PACKAGE.md`）
+3. ONNX 分发与打包已完成；双包更新（含 `engine` 通道真实下载验证）完成，**应用 v0.4.0 已发布**（见 §3、`docs/DUAL_PACKAGE.md`）
 4. `temp/onnx_spike_notes.md` 保留全部实测数据，注意 temp 不入库但本机还在
 
 ### 现成的 ONNX 产物（本机，未入库）

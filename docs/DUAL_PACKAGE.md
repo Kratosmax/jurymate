@@ -1,6 +1,6 @@
 # 双包更新（UI + Engine）
 
-> 状态（2026-10-29 17:40）：engine 通道已发布，UI-only 安装版已真实完成下载、验签、
+> 状态（2026-10-29 17:50）：engine 通道已发布，UI-only 安装版已真实完成下载、验签、
 > 解压、原子切换、启动与 124 张回归；应用 v0.4.0 Release 已发布。
 
 ## 目标
@@ -57,6 +57,6 @@ Rust `backend_exe()` 查找顺序：数据目录 engine → 旧版 bundle 资源
   0.3.2 检查到 0.4.0 并完成更新，落盘
   `D:\AppData\JuryMate\engine\0.4.0\jury-backend\jury-backend.exe`，`current.json` 为
   `{"version":"0.4.0"}`，进程路径已在运行中核对。
-- 线上资产与本地哈希一致：0.4.0 Engine ZIP `1fd66843…05486`、`engine.json` `dfbbe3d6…09dbe8`。
+- engine 通道资产与本地 0.4.0 Engine ZIP 哈希一致：`1fd66843…05486`、`engine.json` `dfbbe3d6…09dbe8`。
 - 124 张扫描与 torch 基线：80 张有分、**Δ=0.0000**、49 组、胜出/status 变化 0。
 - **边界**：应用 Release `latest` 已是 v0.4.0；本文记录 engine 通道与本地运行时的验证，不替代应用 Release 的安装包校验。
