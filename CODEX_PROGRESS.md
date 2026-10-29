@@ -273,3 +273,89 @@ c58e9a3 fix(settings): 评分模式/权重改为应用级持久化
 - 用户不接受的：没证据下结论、把没验证的东西说成"已验证"
 - 用户对「闭眼检测」**没有**表达过重视（此前我误称"用户重视闭眼"，已更正）
 - 发版必须用户明确同意；本次用户选择「不发」，只记录进度
+
+## 9.1 路径与校验（新会话务必先核对这一节）
+
+### 三个"根"分别是什么
+
+| 名称 | 绝对路径 | 怎么来的 |
+|---|---|---|
+| 仓库根 | `F:\git\jurymate` | 固定，git 仓库所在 |
+| 数据根 | `D:\AppData\JuryMate` | `%LOCALAPPDATA%\JuryMate\paths.json` 里的 `data_root` |
+| 构建临时 | `F:\git\jurymate\temp` | `dev-build.ps1` 把 `TEMP/TMP` 指到这里；探针产物也放这里 |
+
+**ONNX 模型不是随便放哪都能读到。** 代码里的查找规则是固定的：
+
+```python
+# backend/aesthetic.py
+def _onnx_dir():
+    return paths.data_dir() / "onnx"      # = D:\AppData\JuryMate\onnx
+```
+
+`paths.data_dir()` 的优先序（见 §1.1）：
+1. 环境变量 `JURYMATE_DATA_DIR`（若设置，以它为准）
+2. `%LOCALAPPDATA%\JuryMate\paths.json` 的 `data_root` ← 当前就是这条
+3. `%LOCALAPPDATA%\JuryMate`
+
+所以**文件名和位置必须严格是**：
+
+```
+D:\AppData\JuryMate\onnx\nima.onnx              ← 审美优先（NIMA）
+D:\AppData\JuryMate\onnx\musiq_land.onnx        ← 画质优先（横向）
+D:\AppData\JuryMate\onnx\musiq_port.onnx        ← 画质优先（纵向）
+```
+
+名字写错（例如 `nima299.onnx`）= 代码找不到 = 静默回退 torch，不会报错。
+
+### 一份文件两个位置（当前状态）
+
+`temp\` 里是**源文件**，`D:\AppData\JuryMate\onnx\` 里是**运行时副本**。
+两边内容必须完全一致——用哈希核对：
+
+| 文件 | 大小 | SHA256 |
+|---|---|---|
+| `temp\nima299.onnx` = `D:\...\onnx\nima.onnx` | 207.3 MB | `6ad8153ac82215bc10fc3ff21b0450d08ada570fda16bb14d61425d09c4d5b16` |
+| `temp\musiq_1024x683.onnx` = `D:\...\onnx\musiq_land.onnx` | 103.9 MB | `6c356ccef2dd867f324739f7043621808bde9fcf8bf62d97ac04a051d7714ced` |
+| `temp\musiq_683x1024.onnx` = `D:\...\onnx\musiq_port.onnx` | 103.9 MB | `91d84cc5fa6c12fe36d6c98c1f005c934981330c41377a5c7c036bcac2fb0e25` |
+
+### 核对命令（PowerShell，可直接跑）
+
+```powershell
+# 1) 数据根是不是这个
+Get-Content "$env:LOCALAPPDATA\JuryMate\paths.json"
+
+# 2) 三个文件是否就位、大小对不对
+Get-ChildItem "D:\AppData\JuryMate\onnx" |
+  Select-Object Name, Length, LastWriteTime
+
+# 3) 哈希是否与上表一致（最关键的一步）
+Get-ChildItem "D:\AppData\JuryMate\onnx\*.onnx" | ForEach-Object {
+  "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name
+}
+```
+
+预期输出三行，分别对应上表三个哈希。**任何一个对不上，就说明文件被替换或复制不完整，
+不要继续后续步骤。**
+
+### 哪些文件不要用
+
+`temp\` 里还有早期试验产物，**全部作废**：
+
+| 文件 | 状态 |
+|---|---|
+| `nima1.onnx` / `nima224.onnx` / `nima_clean.onnx` | 错误输入尺寸（224），分数差 1.3 |
+| `musiq.onnx` | 首次导出，未按横竖拆分 |
+| `musiq_1024x683.onnx` / `musiq_683x1024.onnx` | ✅ 正确，是最终版 |
+
+### 代码侧怎么确认走的是 ONNX 而不是 torch
+
+`backend/aesthetic.py` 的逻辑：`_onnx_models(mode)` 检查文件存在 → 存在就走
+`_score_batch_onnx`，不存在或抛异常就 `log.warning("...回退 torch")` 并走
+`_score_batch_torch`。
+
+所以验证方法：
+```powershell
+# 看后端日志里有没有这行（有 = 走了 ONNX 但失败了，需要排查）
+Select-String "D:\AppData\JuryMate\logs\backend.log" -Pattern "ONNX|回退 torch"
+```
+**没有这行** = 正常走 ONNX（或根本没触发回退）。有这行 = 检查上面三个文件。
