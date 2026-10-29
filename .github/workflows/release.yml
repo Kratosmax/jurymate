@@ -208,6 +208,7 @@ jobs:
           }
           try {
             Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY -ErrorAction SilentlyContinue
+            Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD -ErrorAction SilentlyContinue
             npx tauri signer sign --app-version $ver --private-key $key $zip
             if ($LASTEXITCODE -ne 0 -or -not (Test-Path "$zip.sig")) { throw "引擎包签名失败" }
           } finally {
