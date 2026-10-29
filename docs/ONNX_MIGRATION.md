@@ -84,7 +84,7 @@ CI 构建不再需要它们——这一步是 CI 从 25 分钟降到 12 分钟�
 
 ## 完成记录（2026-10-29 14:00）
 
-- **模型资产**：GitHub Release `models-v1`（非 Latest，`/releases/latest` 仍为 v0.3.2）
+- **模型资产**：GitHub Release `models-v1`（非 Latest，`/releases/latest` 为 v0.4.0）
   - `nima.onnx` 217,340,947 B，SHA256 `6ad8153ac82215bc10fc3ff21b0450d08ada570fda16bb14d61425d09c4d5b16`
   - `musiq_land.onnx` 108,926,867 B，SHA256 `6c356ccef2dd867f324739f7043621808bde9fcf8bf62d97ac04a051d7714ced`
   - `musiq_port.onnx` 108,926,867 B，SHA256 `91d84cc5fa6c12fe36d6c98c1f005c934981330c41377a5c7c036bcac2fb0e25`

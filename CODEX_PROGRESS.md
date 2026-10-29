@@ -90,10 +90,10 @@ CPU 永远兜底。首选 EP 没装时自动降级（N 卡只装了 DML 包仍�
 ## 2. 当前快照（最后核验 2026-10-29 17:00）
 
 - 本地版本：**0.4.0**（`tauri.conf.json` / `package.json` / `Cargo.toml` / `engineVersion` 一致）
-- 已发布版本：**v0.3.2**（旧完整包）；另有模型资产 Release **models-v1**（非 Latest，
-  3 个 ONNX，见 docs/ONNX_MIGRATION.md）与引擎通道 **engine**（已含 0.4.0）
-- **待发布：v0.4.0**（本次提交/tag/push 后由 GitHub Actions 发布）
-- 分支 master，**有 9 个提交未推送**（见 §9），另有本轮 ONNX 分发/打包与双包更新改动未提交
+- 已发布版本：**v0.4.0**（[Release](https://github.com/Kratosmax/jurymate/releases/tag/v0.4.0)，8 个资产）；
+  另有模型资产 Release **models-v1**（非 Latest，3 个 ONNX，见 docs/ONNX_MIGRATION.md）
+  与引擎通道 **engine**（已含 0.4.0）
+- 分支 master，已同步 origin/master；本轮提交已推送
 - **0.4.0 是本轮发布版本**：包含 ONNX 评分迁移、双包 UI/Engine、独立引擎通道与滚动修复。
 
 ### 本轮（2026-10-29）已完成
