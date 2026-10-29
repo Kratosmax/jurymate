@@ -52,6 +52,7 @@ if sys.stderr is None:
 
 
 import aesthetic
+import appsettings
 import errors
 import paths
 import pipeline
@@ -180,6 +181,12 @@ DEFAULT_SETTINGS = {
     "scan_workers": 0,
 }
 
+# 启动即载入应用级设置：这些偏好跨照片目录共用，不能等 /api/start 才恢复。
+# 以前它们只存在 <照片目录>/.jurymate/state.json 里，进程一起来
+# STATE["settings"] 是空的，设置页读到的就是默认值——用户看到的就是
+# "上次选的评分模式没保留"。
+STATE["settings"] = {**DEFAULT_SETTINGS, **appsettings.load()}
+
 def state_file() -> Path | None:
     if not STATE["folder"]:
         return None
@@ -208,6 +215,11 @@ def load_state(folder: str) -> bool:
                 return False
             STATE.update(data)
             STATE["undo_stack"] = []
+            # 目录里的 settings 是历史副本，可能过期；应用级设置永远优先。
+            # 不这样覆盖的话，切回旧目录会把用户刚改的评分模式/权重又顶回去。
+            STATE["settings"] = {**DEFAULT_SETTINGS,
+                                 **data.get("settings", {}),
+                                 **appsettings.load()}
             log.info("恢复进度：%d 张", len(STATE["photos"]))
             return True
         except Exception as e:
@@ -862,7 +874,9 @@ def settings_api():
             STATE["settings"].update(changed)
             if "score_mode" in changed:
                 aesthetic.set_mode(changed["score_mode"])
+        # 写两份：目录内的 state.json（随项目走） + 应用级 app_settings.json（跨目录保留）
         save_state()
+        appsettings.save(changed)
         return jsonify({"ok": True, **changed})
     cpu = os.cpu_count() or 4
     return jsonify({
@@ -907,6 +921,7 @@ def models_remove():
         STATE["settings"]["score_mode"] = ""
         aesthetic.set_mode("")
         save_state()
+        appsettings.save({"score_mode": ""})
         log.info("models: 当前评分模式 %s 的模型被删除，模式已置空", cur)
     return jsonify({"ok": True, "score_mode": STATE["settings"].get("score_mode") or ""})
 
