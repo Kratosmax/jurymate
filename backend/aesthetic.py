@@ -135,7 +135,65 @@ def score(img_pil) -> float:
     return r[0]
 
 
+def _onnx_dir():
+    return paths.data_dir() / "onnx"
+
+
+def _onnx_models(mode: str):
+    """当前模式需要的 ONNX 文件；缺任意一个就返回 None（回退 torch）。"""
+    d = _onnx_dir()
+    if mode == "aesthetic":
+        p = d / "nima.onnx"
+        return {"nima": p} if p.exists() else None
+    if mode == "quality":
+        a, b = d / "musiq_land.onnx", d / "musiq_port.onnx"
+        return {"land": a, "port": b} if a.exists() and b.exists() else None
+    return None
+
+
+def _score_batch_onnx(imgs, models: dict, progress=None) -> list:
+    """ONNX 推理路径。预处理与原 torch 路径一致（1024 缩略图后交给模型）。"""
+    import onnx_score
+    from PIL import Image as _Img
+
+    out = [None] * len(imgs)
+    prepped = []
+    for i, im in enumerate(imgs):
+        try:
+            im = im.convert("RGB")
+            im.thumbnail((1024, 1024), _Img.LANCZOS)
+            prepped.append((i, im))
+        except Exception as e:
+            log.warning("aesthetic: 预处理失败 #%d (%s)", i, e)
+    if not prepped:
+        return out
+    pil = [im for _, im in prepped]
+    if _mode == "aesthetic":
+        vals = onnx_score.nima_scores(pil, models["nima"])
+        scale = 10.0          # NIMA 1~10 -> 百分制
+    else:
+        vals = onnx_score.musiq_scores(pil, models["land"], models["port"])
+        scale = 1.0           # MUSIQ 本身 0~100
+    for (i, _), v in zip(prepped, vals):
+        out[i] = int(round(v * scale))
+    if progress:
+        progress(len(out), len(out))
+    return out
+
+
 def score_batch(imgs, progress=None) -> list:
+    """批量评分入口：有 ONNX 模型就走 ONNX，否则回退 torch。"""
+    if _mode:
+        models = _onnx_models(_mode)
+        if models:
+            try:
+                return _score_batch_onnx(imgs, models, progress)
+            except Exception as e:
+                log.warning("aesthetic: ONNX 推理失败，回退 torch（%s）", e)
+    return _score_batch_torch(imgs, progress)
+
+
+def _score_batch_torch(imgs, progress=None) -> list:
     """批量评分，返回 0-100 的**整数**列表（失败位 None）。
 
     同尺寸的分到一个 forward（模型对纵横比敏感）。
