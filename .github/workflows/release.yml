@@ -201,14 +201,13 @@ jobs:
           [IO.File]::WriteAllText((Join-Path $stage "engine.json"), (@{ version = $ver } | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
           Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zip -CompressionLevel Optimal -Force
           Remove-Item "$zip.sig" -Force -ErrorAction SilentlyContinue
-          $keyPath = Join-Path $env:RUNNER_TEMP "jurymate-engine.key"
-          [IO.File]::WriteAllText($keyPath, $env:TAURI_SIGNING_PRIVATE_KEY, (New-Object Text.UTF8Encoding($false)))
+          $key = $env:TAURI_SIGNING_PRIVATE_KEY
           try {
             Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY -ErrorAction SilentlyContinue
-            npx tauri signer sign --app-version $ver -f $keyPath $zip
+            npx tauri signer sign --app-version $ver --private-key $key $zip
             if ($LASTEXITCODE -ne 0 -or -not (Test-Path "$zip.sig")) { throw "引擎包签名失败" }
           } finally {
-            Remove-Item $keyPath -Force -ErrorAction SilentlyContinue
+            Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY -ErrorAction SilentlyContinue
           }
           $sig = (Get-Content "$zip.sig" -Raw).Trim()
           $sha = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
