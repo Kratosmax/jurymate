@@ -37,11 +37,12 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "../dist-backend/jury-backend.exe": "dist-backend/jury-backend.exe"
+      "../dist-backend/jury-backend/": "dist-backend/jury-backend/"
     },
     "windows": {
       "nsis": {
         "compression": "lzma",
+        "installerHooks": "installer-hooks.nsh",
         "languages": [
           "SimpChinese",
           "English"

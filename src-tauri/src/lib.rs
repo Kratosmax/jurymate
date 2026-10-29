@@ -14,7 +14,7 @@ fn backend_alive() -> bool {
     TcpStream::connect(("127.0.0.1", BACKEND_PORT)).is_ok()
 }
 
-/// sidecar 定位：打包后 = 资源目录 dist-backend/jury-backend.exe（bundle.resources
+/// sidecar 定位：打包后 = 资源目录 dist-backend/jury-backend/jury-backend.exe（bundle.resources
 /// 随安装包分发）；开发模式 = 项目根 dist-backend/（PyInstaller 产物）或手动 Flask
 /// sidecar 选择：settings.json 的 debug=true → 带*控制台的 debug 版
 /// （用户需求：正式版无控制台，debug 模式在设置里开启）；默认无控制台版。
@@ -28,7 +28,7 @@ fn backend_exe(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
     };
     if let Ok(d) = app.path().resource_dir() {
         for name in names {
-            let p = d.join(format!("dist-backend/{}", name));
+            let p = d.join(format!("dist-backend/jury-backend/{}", name));
             if p.exists() {
                 return Some(p);
             }
@@ -38,7 +38,7 @@ fn backend_exe(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
         let found = std::env::current_dir()
             .ok()?
             .ancestors()
-            .map(|d| d.join(format!("dist-backend/{}", name)))
+            .map(|d| d.join(format!("dist-backend/jury-backend/{}", name)))
             .find(|p| p.exists());
         if found.is_some() {
             return found;
@@ -115,7 +115,7 @@ fn spawn_backend(app: &tauri::AppHandle) -> Result<(), String> {
     }
     let Some(exe) = backend_exe(app) else {
         return Err(format!(
-            "未找到后端程序 dist-backend/jury-backend.exe。开发模式下请手动运行 backend/app.py（端口 {}）",
+            "未找到后端程序 dist-backend/jury-backend/jury-backend.exe。开发模式下请手动运行 backend/app.py（端口 {}）",
             BACKEND_PORT
         ));
     };

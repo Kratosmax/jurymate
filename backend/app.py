@@ -179,6 +179,8 @@ DEFAULT_SETTINGS = {
     # 实测瓶颈是 RAW 解码（人脸 279ms/张、审美 348ms/张，其余是解码），
     # 解码是 I/O+CPU 混合且 rawpy 不持 GIL，加线程确实能加快。
     "scan_workers": 0,
+    # 色彩整形（A 方案）：把内嵌预览的灰片感压回去。介意"不是真实色彩"可关。
+    "color_grade": True,
 }
 
 # 启动即载入应用级设置：这些偏好跨照片目录共用，不能等 /api/start 才恢复。

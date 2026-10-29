@@ -91,6 +91,7 @@ New-Item -ItemType Directory -Force -Path $work, $out | Out-Null
 
 Say "构建 sidecar (Python: $Python)"
 # 必须删旧产物：PyInstaller 见到已存在会跳过，导致拿到旧代码
+Remove-Item (Join-Path $out "jury-backend") -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $out "jury-backend.exe") -Force -ErrorAction SilentlyContinue
 Push-Location $work
 try {
@@ -110,7 +111,7 @@ try {
     #
     # torchvision 的 C++ 扩展要单独处理：torchvision.extension 用
     # torch.ops.load_library() 按**文件路径**加载 _C_stable.pyd，
-    # 而 onefile 把它解压到 _MEIPASS/torchvision 下，PyInstaller 默认
+    # 而 PyInstaller 会把它收到 _internal/torchvision 下，默认不保证落在
     # 不保证落在那，结果运行时报 "operator torchvision::nms does not exist"
     # ——这是纯运行时错误，源码环境完全正常，极难查。
     $tvPkg = & $Python -c "import torchvision, os; print(os.path.dirname(torchvision.__file__))"
@@ -120,7 +121,7 @@ try {
     $prevEap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        & $Python -m PyInstaller --name jury-backend --onefile $entry `
+        & $Python -m PyInstaller --name jury-backend --onedir $entry `
             --distpath $out --workpath (Join-Path $work "work") `
             --specpath $work --noconfirm --clean --windowed `
             --hidden-import=mediapipe.tasks.python `
@@ -148,7 +149,7 @@ try {
     }
 } finally { Pop-Location }
 
-$exe = Join-Path $out "jury-backend.exe"
+$exe = Join-Path $out "jury-backend\jury-backend.exe"
 if (-not (Test-Path $exe)) { throw "产物缺失: $exe" }
 
 # 防回归：确认产物确实是 windowed（无控制台子系统）。

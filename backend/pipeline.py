@@ -23,6 +23,7 @@ import imagehash
 import numpy as np
 from PIL import Image
 
+import grade
 import signals
 import faces as faces_mod
 import aesthetic
@@ -204,17 +205,22 @@ def _prepare_base(k: str, ent: dict, thumbs_dir: Path, settings: dict):
         "height": img.height,
         "mtime_str": datetime.fromtimestamp(shot_t).strftime("%m-%d %H:%M:%S"),
     }
+    # 先在 1600px 缩图上做色彩整形：缩略图与分析共用同一张，
+    # 保证「用户看到的」和「模型打分的」是同一张图（否则调了色评分却没变）
+    ana = img.copy()
+    ana.thumbnail((1600, 1600), Image.LANCZOS)
+    if settings.get("color_grade", True):
+        ana = grade.apply(ana)
+
     # 缩略图（PK 大图 1600px + 网格小图 400px）；命名必须用 primary——
     # 配对循环的残留变量曾让 9 张照片互相覆盖（视觉实测发现）
     tdir = thumbs_dir / (primary.stem + primary.suffix.lower().replace(".", "_"))
     tdir.mkdir(parents=True, exist_ok=True)
     big, small = tdir / "view.jpg", tdir / "grid.jpg"
     if not big.exists():
-        im2 = img.copy()
-        im2.thumbnail((1600, 1600), Image.LANCZOS)
-        im2.save(big, quality=88)
+        ana.save(big, quality=88)
     if not small.exists():
-        im3 = img.copy()
+        im3 = ana.copy()
         im3.thumbnail((400, 400), Image.LANCZOS)
         im3.save(small, quality=85)
     photo["thumb_view"] = f"/thumbs/{tdir.name}/view.jpg"
@@ -222,8 +228,6 @@ def _prepare_base(k: str, ent: dict, thumbs_dir: Path, settings: dict):
     photo["phash"] = phash_of(img)
 
     # 分析统一在 1600px 缩图上（6192px 全尺寸会饿死 HTTP 线程——实测教训）
-    ana = img.copy()
-    ana.thumbnail((1600, 1600), Image.LANCZOS)
     rgb = np.asarray(ana.convert("RGB"))
     gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
     sig = signals.compute(gray, settings)

@@ -123,12 +123,12 @@ python app.py --port 5090 --no-browser
 |---|---|---|
 | `insightface/` | 人脸模型 buffalo_l | 约 330MB |
 | `torch/` | 审美评分 MUSIQ 权重 | 约 104MB |
-| `tmp/` | 后端运行时解压 | 每启动一次约 1.1GB |
+| `tmp/` | 调试模式的运行时解压 | 仅手动跑源码时出现 |
 | `logs/` | 后端日志（滚动 5×2MB） | 几 MB |
 
-`tmp/` 是最大的一块：后端用 PyInstaller onefile 打包，每启动一次都把
-约 1.1GB 解压到这里。进程被强杀时不会自动清理，累积起来很占空间。
-把它指到空间充裕的盘可以避免挤爆系统盘。
+`tmp/` 只在不打包的调试模式下出现：`--onedir` 的 sidecar 直接从安装目录加载，
+正常启动不再解压。早期 `--onefile` 版本每启动一次要解压约 1.1GB 到这里，
+把它指到空间充裕的盘，可以避免调试时挤爆系统盘。
 
 照片目录下另有一个 `.jurymate/` 存该目录的整理进度
 （`state.json` / `缩略图`），删掉它即重置该目录。缩略图刻意跟随照片目录，
@@ -149,9 +149,9 @@ cd backend
 pip install -r ../requirements.txt
 cd ..
 
-# 3. 打 sidecar（生成 dist-backend/jury-backend.exe，约 479MB）
+# 3. 打 sidecar（生成 dist-backend/jury-backend/ 目录）
 pip install pyinstaller
-cd build-backend && pyinstaller --name jury-backend --onefile ../backend/app.py && cd ..
+cd build-backend && pyinstaller --name jury-backend --onedir ../backend/app.py && cd ..
 
 # 4. 打安装包（需签名环境变量，见下）
 npm run tauri build
