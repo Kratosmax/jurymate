@@ -159,6 +159,28 @@ npm run tauri build
 
 产物位置：`src-tauri/target/release/bundle/nsis/`。
 
+### 构建临时目录（C 盘紧张时必看）
+
+**只有走仓库自带的 `scripts\dev-build.ps1` 才会把临时目录改到项目内。**
+
+| 构建方式 | 临时文件落点 |
+|---|---|
+| `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\dev-build.ps1` | `<repo>\temp`（推荐） |
+| 直接 `npm run tauri build` | 系统 `%TEMP%`（C 盘）——WiX/NSIS 中间文件可达数 GB |
+
+脚本会把以下变量钉到 `<repo>\temp`，子进程全部继承：
+
+```
+TEMP / TMP              → <repo>\temp
+PYINSTALLER_CONFIG_DIR  → <repo>\temp\pyinstaller-cache
+PIP_CACHE_DIR           → <repo>\temp\pip-cache
+NPM_CONFIG_CACHE        → <repo>\temp\npm-cache
+```
+
+PyInstaller 的 `--workpath` / `--specpath` 也显式传到了 `<repo>\temp`。
+打包后的 sidecar 运行时解压 `_MEI*` 则固定落在数据目录下的 `tmp`（默认 `D:\AppData\JuryMate\tmp`），
+这部分由 `src-tauri/src/lib.rs` 在 spawn 时设置 `TEMP` 控制，与构建无关。
+
 **测试**：
 
 ```bash

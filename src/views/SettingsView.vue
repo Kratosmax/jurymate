@@ -5,7 +5,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { api, waitBackend } from '../api'
-import { loadNetCfg, normalizeMirrors, saveNetCfg } from '../netstore'
+import { loadNetCfg, normalizeMirrors, saveNetCfg, type NetCfg } from '../netstore'
 
 const emit = defineEmits<{ toast: [m: string]; netsaved: []; refresh: [] }>()
 const props = defineProps<{ updater: any }>()
@@ -150,6 +150,7 @@ async function loadNet() {
   netProxy.value = local.http_proxy
   useMirror.value = local.use_mirror
   netOrder.value = local.order
+  savedNet.value = local
   // 本地没存过（首次使用）才从后端取一次作为初始值
   if (localStorage.getItem('jurymate.net')) return
   try {
@@ -166,8 +167,32 @@ async function loadNet() {
     })
   } catch { /* 后端没起来就用默认值 */ }
 }
+const netSaving = ref(false)
+// 已保存（= 已生效）的那份，用来显示「当前生效」；和输入框里的草稿分开
+const savedNet = ref<NetCfg>(loadNetCfg())
+
+function shortHost(u: string): string {
+  try { return new URL(u).host } catch { return u }
+}
+const effectiveNet = computed(() => {
+  const c = savedNet.value
+  const parts: string[] = []
+  if (c.use_mirror) {
+    const ms = normalizeMirrors(c.github_mirrors).map(shortHost)
+    const order = c.order === 'direct_first'
+      ? ['直连', ...ms]
+      : [...ms, '直连']
+    parts.push(order.join(' → '))
+  } else {
+    parts.push('直连 GitHub')
+  }
+  const p = c.http_proxy.trim()
+  if (p) parts.push(`代理 ${p}`)
+  return parts.join('　｜　')
+})
+
 async function saveNet() {
-  const cfg = {
+  const cfg: NetCfg = {
     use_mirror: useMirror.value,
     github_mirrors: normalizeMirrors(netMirrors.value),
     http_proxy: netProxy.value.trim(),
@@ -175,13 +200,23 @@ async function saveNet() {
   }
   // 本地先落盘并立刻生效（更新检查马上能用），后端只是同步一份给模型下载器
   saveNetCfg(cfg)
+  savedNet.value = cfg
+  netMirrors.value = [...cfg.github_mirrors]
   emit('netsaved')
-  netSavedMsg.value = '已保存到本机，立即生效'
-  setTimeout(() => (netSavedMsg.value = ''), 4000)
+  netSaving.value = true
+  let synced = false
   try {
-    await api.netSettingsSave(cfg.use_mirror, cfg.github_mirrors, cfg.http_proxy, cfg.order)
-    await loadPaths()
-  } catch { /* 后端未就绪：本地已生效，下次启动会再同步 */ }
+    const r = await api.netSettingsSave(cfg.use_mirror, cfg.github_mirrors, cfg.http_proxy, cfg.order)
+    synced = (r as any)?.ok !== false
+    if (synced) await loadPaths()
+  } catch { synced = false }
+  netSaving.value = false
+  netSavedMsg.value = synced
+    ? '已保存并同步，立即生效'
+    : '已保存到本机，立即生效（后端就绪后自动同步）'
+  setTimeout(() => (netSavedMsg.value = ''), 5000)
+  // 立刻用新配置查一次更新：让"到底生效没有"当场可见，而不是等下次手动点
+  props.updater?.checkUpdate?.(true)
 }
 
 // ---- 模型就绪检查 ----
@@ -551,43 +586,54 @@ onMounted(boot)
     <!-- 网络设置 -->
     <section class="card">
       <h2>网络设置</h2>
+      <div class="net-lead">改完点保存，<b>立即生效，不用重启</b>。检查更新马上就用新配置。</div>
 
-      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px;font-size:13px">
-        <input type="checkbox" v-model="useMirror" style="width:auto;margin:0" />
-        <span>使用 GitHub 镜像站（仅影响 GitHub 来源的模型与更新）</span>
+      <label class="net-toggle">
+        <input type="checkbox" v-model="useMirror" />
+        <span>使用 GitHub 镜像站</span>
+        <span class="dim">只影响 GitHub 来源的更新与模型下载</span>
       </label>
 
       <template v-if="useMirror">
-        <div class="dim" style="margin:0 0 4px;font-size:12px">镜像前缀（按下面的顺序尝试）：</div>
-        <div v-for="(_, i) in netMirrors" :key="i" style="display:flex;gap:6px;margin-bottom:4px">
-          <input v-model="netMirrors[i]" type="text" style="flex:1;padding:4px 8px;font-size:12px"
-                 placeholder="https://ghfast.top" />
-          <button class="ghost" style="padding:2px 8px" @click="netMirrors.splice(i, 1)">删</button>
+        <div class="net-label">镜像前缀<span class="dim">按顺序尝试，前一条失败自动换下一条</span></div>
+        <div class="net-rows">
+          <div v-for="(_, i) in netMirrors" :key="i" class="net-row">
+            <span class="net-idx">{{ i + 1 }}</span>
+            <input v-model="netMirrors[i]" type="text" class="net-input"
+                   placeholder="https://ghfast.top" spellcheck="false" />
+            <button class="net-del" title="删除这条镜像" @click="netMirrors.splice(i, 1)">×</button>
+          </div>
+          <button class="net-add" @click="netMirrors.push('')">＋ 添加镜像</button>
         </div>
-        <button class="ghost" style="padding:2px 10px" @click="netMirrors.push('')">+ 添加镜像</button>
 
-        <div class="dim" style="margin:14px 0 4px;font-size:12px">尝试顺序：</div>
-        <div style="display:flex;gap:16px;font-size:12px">
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-            <input type="radio" value="mirror_first" v-model="netOrder" style="width:auto;margin:0" />
+        <div class="net-label">尝试顺序</div>
+        <div class="net-radios">
+          <label>
+            <input type="radio" value="mirror_first" v-model="netOrder" />
             <span>先镜像，失败回直连<span class="dim">（通常更快）</span></span>
           </label>
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-            <input type="radio" value="direct_first" v-model="netOrder" style="width:auto;margin:0" />
+          <label>
+            <input type="radio" value="direct_first" v-model="netOrder" />
             <span>先直连，失败回镜像<span class="dim">（文件更可信）</span></span>
           </label>
         </div>
       </template>
 
-      <div class="dim" style="margin:14px 0 4px;font-size:12px">
-        HTTP 代理（对更新检查与模型下载同时生效，可空）：
-      </div>
-      <input v-model="netProxy" type="text" style="width:280px;padding:4px 8px;font-size:12px"
-             placeholder="http://127.0.0.1:10808" />
+      <div class="net-label">HTTP 代理<span class="dim">可空，对更新检查与模型下载同时生效</span></div>
+      <input v-model="netProxy" type="text" class="net-input net-proxy"
+             placeholder="http://127.0.0.1:10808" spellcheck="false" />
 
-      <div style="margin-top:12px;display:flex;align-items:center;gap:10px">
-        <button class="act" style="padding:5px 14px;font-size:12px" @click="saveNet">保存网络设置</button>
-        <span v-if="netSavedMsg" class="dim" style="font-size:12px;color:var(--good)">{{ netSavedMsg }}</span>
+      <div class="net-actions">
+        <button class="act net-save" :disabled="netSaving" @click="saveNet">
+          {{ netSaving ? '保存中…' : '保存网络设置' }}
+        </button>
+        <span v-if="netSavedMsg" class="net-ok">✓ {{ netSavedMsg }}</span>
+      </div>
+
+      <!-- 当前实际生效的线路：让用户一眼确认"我填的到底生效没有" -->
+      <div class="net-effective">
+        <span class="dot" />
+        当前生效：<b>{{ effectiveNet }}</b>
       </div>
     </section>
 
@@ -768,4 +814,47 @@ h2 { font-size: 15px; margin: 0 0 10px; }
 }
 .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .dim { color: var(--dim); }
+/* ---- 网络设置 ---- */
+.net-lead { font-size: 12px; color: var(--dim); margin: 2px 0 14px; }
+.net-lead b { color: var(--good); font-weight: 600; }
+.net-toggle { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; margin-bottom: 4px; }
+.net-toggle input { width: auto; margin: 0; }
+.net-label { font-size: 12px; color: var(--dim); margin: 16px 0 6px; }
+.net-label .dim { margin-left: 6px; opacity: .75; }
+.net-rows { display: flex; flex-direction: column; gap: 6px; }
+.net-row { display: flex; align-items: center; gap: 8px; }
+.net-idx { width: 16px; text-align: right; font-size: 11px; color: var(--dim); font-variant-numeric: tabular-nums; }
+.net-input {
+  width: 100%; max-width: 460px; padding: 7px 10px; font-size: 13px;
+  background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; color: var(--txt);
+  transition: border-color var(--dur-2) var(--ease-standard), box-shadow var(--dur-2) var(--ease-standard);
+}
+.net-input:focus { outline: none; border-color: var(--acc); box-shadow: 0 0 0 3px hsl(218 90% 62% / .15); }
+.net-proxy { max-width: 300px; }
+.net-del {
+  width: 28px; height: 28px; flex-shrink: 0; border-radius: 8px; line-height: 1;
+  border: 1px solid var(--line); background: transparent; color: var(--dim);
+  font-size: 15px; cursor: pointer;
+  transition: color var(--dur-2) var(--ease-standard), border-color var(--dur-2) var(--ease-standard);
+}
+.net-del:hover { color: var(--bad); border-color: var(--bad); }
+.net-add {
+  align-self: flex-start; margin-top: 2px; padding: 5px 12px; font-size: 12px;
+  border-radius: 8px; border: 1px dashed var(--line); background: transparent;
+  color: var(--dim); cursor: pointer;
+  transition: color var(--dur-2) var(--ease-standard), border-color var(--dur-2) var(--ease-standard);
+}
+.net-add:hover { color: var(--acc); border-color: var(--acc); }
+.net-radios { display: flex; gap: 18px; font-size: 12px; flex-wrap: wrap; }
+.net-radios label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.net-radios input { width: auto; margin: 0; }
+.net-actions { display: flex; align-items: center; gap: 12px; margin-top: 18px; }
+.net-save { padding: 8px 18px; font-size: 13px; border-radius: 9px; }
+.net-ok { font-size: 12px; color: var(--good); animation: rise-in var(--dur-3) var(--ease-emphasized); }
+.net-effective {
+  margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line);
+  font-size: 12px; color: var(--dim); display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+}
+.net-effective b { color: var(--txt); font-weight: 500; }
+.net-effective .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--good); box-shadow: 0 0 6px var(--good); flex-shrink: 0; }
 </style>
